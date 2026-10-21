@@ -1,14 +1,25 @@
-import { useState, useEffect } from 'react';
-import { ArrowLeft, UserCog, Trash2, AlertCircle, Shield } from 'lucide-react';
+import { useState, useEffect, type ComponentType } from 'react';
+import { ArrowLeft, UserCog, Trash2, AlertCircle, Shield, ListChecks, Bell } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
+import { TasteMatchIcon } from '@/components/TasteMatchIcon';
 import { supabase } from '@/lib/supabase';
+import { AdminNotifyPanel } from '@/components/AdminNotifyPanel';
+import { AdminTasteMatchPanel } from '@/components/AdminTasteMatchPanel';
 import { fetchSupportEmail, updateSupportEmail } from '@/lib/siteSettings';
+
+type AdminTab = 'control' | 'notifications' | 'taste';
+const TABS: { key: AdminTab; label: string; path: string; Icon: ComponentType<{ className?: string }> }[] = [
+  { key: 'control', label: 'Control', path: '/admin/admins', Icon: ListChecks },
+  { key: 'notifications', label: 'Notifications', path: '/admin/notifications', Icon: Bell },
+  { key: 'taste', label: 'Taste Match', path: '/admin/taste', Icon: TasteMatchIcon },
+];
 
 interface AdminManageAdminsPageProps {
   navigate: (path: string) => void;
+  tab?: AdminTab;
 }
 
-export function AdminManageAdminsPage({ navigate }: AdminManageAdminsPageProps) {
+export function AdminManageAdminsPage({ navigate, tab = 'control' }: AdminManageAdminsPageProps) {
   const { user, isAdmin, loading: authLoading } = useAuth();
   const [adminEmails, setAdminEmails] = useState<string[]>([]);
   const [newAdminEmail, setNewAdminEmail] = useState('');
@@ -107,14 +118,21 @@ export function AdminManageAdminsPage({ navigate }: AdminManageAdminsPageProps) 
         </button>
         <div className="flex items-center gap-2">
           <Shield className="w-5 h-5" style={{ color: 'var(--color-teal-dark)' }} />
-          <h1 className="font-serif text-3xl font-semibold tracking-tight" style={{ color: 'var(--color-text)' }}>Admins &amp; Contacts</h1>
+          <h1 className="font-serif text-3xl font-semibold tracking-tight" style={{ color: 'var(--color-text)' }}>Control Settings</h1>
         </div>
         <p className="text-sm mt-1" style={{ color: 'var(--color-text-muted)' }}>
-          Manage which email addresses have access to the admin panel.
+          Control admin access and contacts, notify your readers, and see how Taste Match works. Announcements, the roadmap and the Submit freeze live in WebApp Pages Moderation.
         </p>
+        <div className="mt-5 inline-flex flex-wrap items-center gap-1 rounded-xl p-1" role="tablist" aria-label="Control Settings sections" style={{ background: 'var(--color-paper)', border: '1px solid var(--color-border)' }}>
+          {TABS.map(({ key, label, path, Icon }) => (
+            <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => navigate(path)} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-colors" style={{ background: tab === key ? 'linear-gradient(135deg,#013a46,#0097b2)' : 'transparent', color: tab === key ? '#fff' : 'var(--color-text)' }}>
+              <Icon className="w-4 h-4" /> {label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="max-w-xl space-y-4">
+      {tab === 'control' && <div className="max-w-xl space-y-4">
         <div className="surface-card p-6">
           <div className="flex items-start justify-between gap-4 mb-4">
             <div>
@@ -163,7 +181,10 @@ export function AdminManageAdminsPage({ navigate }: AdminManageAdminsPageProps) 
             ))}
           </div>
         </div>
-      </div>
+      </div>}
+
+      {tab === 'notifications' && <AdminNotifyPanel />}
+      {tab === 'taste' && <AdminTasteMatchPanel />}
     </div>
   );
 }

@@ -1,11 +1,13 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { Download, Instagram, Linkedin, Link2, BookOpen, RotateCcw, ChevronDown, Camera, ImagePlus, ExternalLink } from 'lucide-react';
-import { toPng } from 'html-to-image';
+import { toCanvas, toPng } from 'html-to-image';
 import type { ProfileQuestion } from '@/lib/profileQuestions';
 import { NlLogo } from '@/components/NlLogo';
+import { NameBlock } from '@/components/NameBlock';
 import { sanitizeUserText, safeExternalUrl } from '@/lib/sanitize';
 import { normalizePosterUrl } from '@/lib/posterUrl';
 import { answerImageUrls, answerText, decodeOtherAnswer } from '@/components/ProfileQuestionAnswer';
+import { useOverlayHistory } from '@/lib/overlayHistory';
 
 export type ProfileCardData = {
   name: string | null;
@@ -103,11 +105,6 @@ const FIT_STEPS = (() => {
 export function cleanInstagram(value: string | null | undefined): string {
   return (value || '').trim().replace(/^https?:\/\/(www\.)?instagram\.com\//i, '').replace(/^(www\.)?instagram\.com\//i, '').split(/[/?#]/)[0].replace(/^@+/, '').slice(0, 30);
 }
-/** Name size steps down with length so long names stay readable and never run off the card. */
-function nameScale(name: string): number {
-  const n = name.trim().length;
-  return n <= 9 ? 1 : n <= 14 ? 0.82 : n <= 20 ? 0.66 : n <= 28 ? 0.54 : 0.46;
-}
 function normalizeUrl(value: string) { return safeExternalUrl(value) || '#'; }
 function platformLabel(platform: string) { return platform === 'x' ? 'X' : platform.charAt(0).toUpperCase() + platform.slice(1); }
 function platformIcon(platform: string, size: number) {
@@ -127,17 +124,20 @@ const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() 
 
 function imageAnswerGrid(urls: string[], cols: number): string { return urls.length <= 1 ? '1fr' : cols === 2 ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)'; }
 
-export function ProfileCard({ data, download = false, onAvatarUpload, onHeaderUpload, onSuperBlitzBannerUpload, onViewPublicProfile, onFollowersClick, layout = 'inline', initialFormat, publicFormat, onPublicFormatChange }: { data: ProfileCardData; onFollowersClick?: () => void; download?: boolean; onAvatarUpload?: () => void; onHeaderUpload?: () => void; onSuperBlitzBannerUpload?: () => void; onViewPublicProfile?: () => void; layout?: 'inline' | 'rows'; initialFormat?: FormatKey; publicFormat?: FormatKey; onPublicFormatChange?: (f: FormatKey) => void | Promise<void> }) {
+export function ProfileCard({ data, download = false, onAvatarUpload, onHeaderUpload, onSuperBlitzBannerUpload, onViewPublicProfile, onFollowersClick, layout = 'inline', initialFormat, publicFormat, onPublicFormatChange, header, topActions }: { header?: ReactNode; topActions?: (ctx: { replay: () => void; replayKey: number }) => ReactNode; data: ProfileCardData; onFollowersClick?: () => void; download?: boolean; onAvatarUpload?: () => void; onHeaderUpload?: () => void; onSuperBlitzBannerUpload?: () => void; onViewPublicProfile?: () => void; layout?: 'inline' | 'rows'; initialFormat?: FormatKey; publicFormat?: FormatKey; onPublicFormatChange?: (f: FormatKey) => void | Promise<void> }) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [format, setFormat] = useState<FormatKey>(initialFormat || PREVIEW_FORMAT);
   const [publicSaved, setPublicSaved] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
+  useOverlayHistory(downloadMenuOpen && download, () => setDownloadMenuOpen(false));
   const [exportType, setExportType] = useState<'png' | 'pdf' | 'video'>('png');
   const [boxWidth, setBoxWidth] = useState(0);
   const [inView, setInView] = useState(false);
   const [replay, setReplay] = useState(0);
+  const [videoMode, setVideoMode] = useState(false);
+  const [videoGo, setVideoGo] = useState(false);
   const selected = FORMATS.find((f) => f.key === format) || FORMATS[3];
   const scale = boxWidth > 0 ? Math.min(1, boxWidth / selected.width) : 1;
 
@@ -161,20 +161,23 @@ export function ProfileCard({ data, download = false, onAvatarUpload, onHeaderUp
     return () => io.disconnect();
   }, []);
 
+  /** Corner radius of the exported card, matching the rounded preview (24px at preview width). */
+  const exportRadius = (f: { width: number; height: number }) => Math.round(f.width * (f.width > f.height ? 0.043 : 0.063));
+
   const renderCardPng = async (exportFormat: FormatKey) => {
     if (exportFormat !== format) setFormat(exportFormat);
     await nextFrame();
     await new Promise((r) => window.setTimeout(r, 140));
     if ('fonts' in document) await document.fonts.ready;
     const exportSelected = FORMATS.find((f) => f.key === exportFormat) || selected;
+    // No background colour: the rounded corners stay transparent instead of becoming a rectangle.
     const options = {
       cacheBust: true,
       pixelRatio: exportFormat === 'SuperBlitz' ? 2 : 1,
       width: exportSelected.width,
       height: exportSelected.height,
-      backgroundColor: exportFormat === 'SuperBlitz' ? '#ffffff' : C.deep2,
       imagePlaceholder: IMAGE_PLACEHOLDER,
-      style: { transform: 'none' },
+      style: { transform: 'none', borderRadius: `${exportRadius(exportSelected)}px` },
     };
     const dataUrl = await toPng(canvasRef.current!, options);
     return { dataUrl, exportSelected };
@@ -207,15 +210,26 @@ export function ProfileCard({ data, download = false, onAvatarUpload, onHeaderUp
       const image = new Image();
       image.src = dataUrl;
       await new Promise<void>((resolve, reject) => { image.onload = () => resolve(); image.onerror = () => reject(new Error('Could not load profile card image')); });
+      const pxW = image.naturalWidth || exportSelected.width;
+      const pxH = image.naturalHeight || exportSelected.height;
       const jpegCanvas = document.createElement('canvas');
-      jpegCanvas.width = exportSelected.width;
-      jpegCanvas.height = exportSelected.height;
-      const ctx = jpegCanvas.getContext('2d');
+      jpegCanvas.width = pxW;
+      jpegCanvas.height = pxH;
+      const ctx = jpegCanvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) throw new Error('Could not prepare PDF image');
+      // Alpha (rounded corners) goes into a PDF soft mask; the JPEG itself is composited on the card colour.
+      ctx.drawImage(image, 0, 0, pxW, pxH);
+      const rgba = ctx.getImageData(0, 0, pxW, pxH).data;
+      const alpha = new Uint8Array(pxW * pxH);
+      for (let i = 0; i < alpha.length; i++) alpha[i] = rgba[i * 4 + 3];
+      ctx.globalCompositeOperation = 'destination-over';
       ctx.fillStyle = format === 'SuperBlitz' ? '#ffffff' : C.deep2;
-      ctx.fillRect(0, 0, jpegCanvas.width, jpegCanvas.height);
-      ctx.drawImage(image, 0, 0, jpegCanvas.width, jpegCanvas.height);
+      ctx.fillRect(0, 0, pxW, pxH);
       const jpegData = await new Promise<Blob>((resolve, reject) => jpegCanvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Could not encode PDF image')), 'image/jpeg', 0.94));
+      let maskBytes: Uint8Array = alpha; let maskFilter = '';
+      if (typeof CompressionStream !== 'undefined') {
+        try { maskBytes = new Uint8Array(await new Response(new Blob([alpha]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer()); maskFilter = '/Filter /FlateDecode '; } catch { maskBytes = alpha; maskFilter = ''; }
+      }
       const bytes = new Uint8Array(await jpegData.arrayBuffer());
       const pageW = exportSelected.width * 0.75;
       const pageH = exportSelected.height * 0.75;
@@ -230,13 +244,16 @@ export function ProfileCard({ data, download = false, onAvatarUpload, onHeaderUp
       object(2, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
       object(3, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW.toFixed(2)} ${pageH.toFixed(2)}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`);
       offsets[4] = length;
-      push(`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${exportSelected.width} /Height ${exportSelected.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${bytes.length} >>\nstream\n`);
+      push(`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${pxW} /Height ${pxH} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /SMask 6 0 R /Length ${bytes.length} >>\nstream\n`);
       push(bytes); push('\nendstream\nendobj\n');
       const stream = `q\n${pageW.toFixed(2)} 0 0 ${pageH.toFixed(2)} 0 0 cm\n/Im0 Do\nQ\n`;
       offsets[5] = length;
       push(`5 0 obj\n<< /Length ${enc.encode(stream).length} >>\nstream\n${stream}endstream\nendobj\n`);
+      offsets[6] = length;
+      push(`6 0 obj\n<< /Type /XObject /Subtype /Image /Width ${pxW} /Height ${pxH} /ColorSpace /DeviceGray /BitsPerComponent 8 ${maskFilter}/Length ${maskBytes.length} >>\nstream\n`);
+      push(maskBytes); push('\nendstream\nendobj\n');
       const xref = length;
-      push(`xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`);
+      push(`xref\n0 7\n0000000000 65535 f \n${offsets.slice(1).map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`);
       const pdfParts = chunks;
       const blob = new Blob(pdfParts, { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
@@ -252,56 +269,96 @@ export function ProfileCard({ data, download = false, onAvatarUpload, onHeaderUp
     } finally { setDownloading(false); }
   };
 
+  /**
+   * Video = the card's real opening animation. The page's CSS animations are paused and stepped to the wall-clock time
+   * of each frame, each frame is rendered with the rounded card shape, and the frames are then played back (cross-faded)
+   * into a MediaRecorder stream.
+   */
   const downloadAnimatedVideo = async () => {
     if (!canvasRef.current || downloading) return;
     setDownloading(true);
+    const EFFECT_MS = 3300; const HOLD_MS = 1000;
     try {
-      const { dataUrl, exportSelected } = await renderCardPng(format);
-      const image = new Image();
-      image.src = dataUrl;
-      await new Promise<void>((resolve, reject) => { image.onload = () => resolve(); image.onerror = () => reject(new Error('Could not load exported card image')); });
-      const videoCanvas = document.createElement('canvas');
-      // Keep a crisp but manageable video size for sharing.
-      const factor = Math.min(1, 1280 / exportSelected.width, 1920 / exportSelected.height);
-      videoCanvas.width = Math.max(2, Math.round(exportSelected.width * factor));
-      videoCanvas.height = Math.max(2, Math.round(exportSelected.height * factor));
-      const ctx = videoCanvas.getContext('2d');
-      if (!ctx || !videoCanvas.captureStream || typeof MediaRecorder === 'undefined') throw new Error('Animated video export is not supported in this browser.');
-      const stream = videoCanvas.captureStream(30);
+      if (typeof MediaRecorder === 'undefined') throw new Error('Animated video export is not supported in this browser.');
       const mimeType = ['video/mp4;codecs=h264', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'].find((type) => MediaRecorder.isTypeSupported(type));
       if (!mimeType) throw new Error('This browser does not support an exportable MP4 or WebM video format.');
-      const recorder = new MediaRecorder(stream, { mimeType });
+      if ('fonts' in document) await document.fonts.ready;
+      const exportFmt = FORMATS.find((f) => f.key === format) || selected;
+      const ratio = Math.min(1, 720 / exportFmt.width, 1280 / exportFmt.height);
+      const radius = exportRadius(exportFmt);
+
+      // Fresh canvas in "animated" mode, held at the start until the images are ready.
+      setVideoGo(false); setVideoMode(true);
+      await nextFrame(); await new Promise((r) => window.setTimeout(r, 450)); await nextFrame();
+      const root = canvasRef.current as HTMLDivElement | null;
+      if (!root) throw new Error('The profile card is not ready yet.');
+      setVideoGo(true); await nextFrame();
+
+      const t0 = performance.now();
+      const frames: { t: number; canvas: HTMLCanvasElement }[] = [];
+      while (true) {
+        const elapsed = performance.now() - t0;
+        // Step every running CSS animation to this moment, then freeze its look into custom properties.
+        root.classList.remove('nl-pc-frozen');
+        const anims = (root.getAnimations ? root.getAnimations({ subtree: true }) : []) as Animation[];
+        const seen = new Set<Element>();
+        anims.forEach((a) => { try { a.pause(); a.currentTime = Math.min(elapsed, EFFECT_MS); } catch { /* ignore */ } });
+        anims.forEach((a) => {
+          const el = (a.effect as KeyframeEffect | null)?.target as HTMLElement | null;
+          if (!el || seen.has(el) || el instanceof SVGElement) return;
+          seen.add(el);
+          const cs = getComputedStyle(el);
+          el.setAttribute('data-nlf', '');
+          el.style.setProperty('--fo', cs.opacity);
+          el.style.setProperty('--ft', cs.transform === '' ? 'none' : cs.transform);
+          el.style.setProperty('--fb', cs.boxShadow === '' ? 'none' : cs.boxShadow);
+        });
+        root.classList.add('nl-pc-frozen');
+        const canvas = await toCanvas(root, { cacheBust: false, pixelRatio: ratio, width: exportFmt.width, height: exportFmt.height, imagePlaceholder: IMAGE_PLACEHOLDER, style: { transform: 'none', borderRadius: `${radius}px` } });
+        frames.push({ t: Math.min(elapsed, EFFECT_MS), canvas });
+        if (elapsed >= EFFECT_MS) break;
+      }
+      root.classList.remove('nl-pc-frozen');
+      setVideoMode(false); setVideoGo(false);
+
+      const fw = frames[0].canvas.width; const fh = frames[0].canvas.height;
+      const out = document.createElement('canvas'); out.width = fw - (fw % 2); out.height = fh - (fh % 2);
+      const ctx = out.getContext('2d');
+      if (!ctx || !out.captureStream) throw new Error('Animated video export is not supported in this browser.');
+      const stream = out.captureStream(30);
+      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 6_000_000 });
       const chunks: BlobPart[] = [];
       recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
       const stopped = new Promise<Blob>((resolve) => { recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType })); });
+      const backdrop = format === 'SuperBlitz' ? '#ffffff' : '#ecfbfc';
+      const last = frames[frames.length - 1];
+      const total = last.t + HOLD_MS;
       recorder.start();
       const started = performance.now();
       await new Promise<void>((resolve) => {
-        const frame = (now: number) => {
-          const t = Math.min(1, (now - started) / 2500);
-          const ease = 1 - Math.pow(1 - t, 3);
-          ctx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
-          ctx.fillStyle = '#013a46'; ctx.fillRect(0, 0, videoCanvas.width, videoCanvas.height);
-          const zoom = 0.94 + ease * 0.06;
-          const dw = videoCanvas.width * zoom, dh = videoCanvas.height * zoom;
-          ctx.save(); ctx.globalAlpha = Math.min(1, t * 5); ctx.shadowColor = 'rgba(92,225,230,.65)'; ctx.shadowBlur = 24 * factor;
-          ctx.drawImage(image, (videoCanvas.width-dw)/2, (videoCanvas.height-dh)/2, dw, dh); ctx.restore();
-          if (t < 1) requestAnimationFrame(frame); else { window.setTimeout(() => recorder.stop(), 150); resolve(); }
+        const tick = (now: number) => {
+          const el = Math.min(now - started, total);
+          let i = 0; while (i < frames.length - 1 && frames[i + 1].t <= el) i++;
+          const cur = frames[i]; const nxt = frames[Math.min(i + 1, frames.length - 1)];
+          ctx.fillStyle = backdrop; ctx.fillRect(0, 0, out.width, out.height);
+          ctx.drawImage(cur.canvas, 0, 0, out.width, out.height);
+          if (nxt !== cur && nxt.t > cur.t) { ctx.globalAlpha = Math.max(0, Math.min(1, (el - cur.t) / (nxt.t - cur.t))); ctx.drawImage(nxt.canvas, 0, 0, out.width, out.height); ctx.globalAlpha = 1; }
+          if (el < total) requestAnimationFrame(tick); else { window.setTimeout(() => recorder.stop(), 200); resolve(); }
         };
-        requestAnimationFrame(frame);
+        requestAnimationFrame(tick);
       });
       const blob = await stopped;
       stream.getTracks().forEach((track) => track.stop());
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-      a.href = url; a.download = `novelty-library-profile-${data.username || 'reader'}-${format.replace(':', 'x')}-animated.${ext}`; a.click();
+      a.href = url; a.download = `novelty-library-profile-${data.username || 'reader'}-${format.replace(':', 'x')}-animated.${ext}`; document.body.appendChild(a); a.click(); a.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1500);
       setDownloadMenuOpen(false);
     } catch (error) {
       console.error(error);
       window.alert(error instanceof Error ? error.message : 'Animated video export failed.');
-    } finally { setDownloading(false); }
+    } finally { setVideoMode(false); setVideoGo(false); setDownloading(false); }
   };
 
   const exportSelected = FORMATS.find((f) => f.key === format) || selected;
@@ -318,9 +375,15 @@ export function ProfileCard({ data, download = false, onAvatarUpload, onHeaderUp
       </div>}
     </div>}
 
+    {/* Optional action row (e.g. Follow | Replay | Share on the public profile) sitting above the stats bar. */}
+    {topActions && <div className="nl-pc-head w-full mx-auto" style={{ maxWidth: selected.width > selected.height ? 560 : 380 }}>{topActions({ replay: () => setReplay((n) => n + 1), replayKey: replay })}</div>}
+
+    {/* Optional slot above the card (the Followers | Following bar). Same max width as the card so the two always line up, whichever format is selected. */}
+    {header && <div className="nl-pc-head w-full mx-auto" style={{ maxWidth: selected.width > selected.height ? 560 : 380 }}>{header}</div>}
+
     {/* The preview is the exact export canvas, scaled down to fit the page. What you see is what you download. */}
     <div ref={wrapRef} className="relative w-full mx-auto overflow-hidden rounded-[24px] nl-pc-preview" style={{ height: selected.height * scale, maxWidth: selected.width > selected.height ? 560 : 380, boxShadow: '0 26px 60px rgba(0,80,95,.28)', border: '1px solid rgba(8,145,178,.3)' }}>
-      <CardCanvas key={`${format}-${replay}`} canvasRef={canvasRef} data={data} width={selected.width} height={selected.height} superBlitz={format === 'SuperBlitz'} scale={scale} play={inView} still={downloading} onAvatarUpload={onAvatarUpload} onHeaderUpload={onHeaderUpload} onSuperBlitzBannerUpload={onSuperBlitzBannerUpload} onFollowersClick={onFollowersClick} />
+      <CardCanvas key={`${format}-${replay}-${videoMode ? 'v' : 'n'}`} canvasRef={canvasRef} data={data} width={selected.width} height={selected.height} superBlitz={format === 'SuperBlitz'} scale={scale} play={videoMode ? videoGo : inView} still={downloading && !videoMode} onAvatarUpload={onAvatarUpload} onHeaderUpload={onHeaderUpload} onSuperBlitzBannerUpload={onSuperBlitzBannerUpload} onFollowersClick={onFollowersClick} />
     </div>
 
     {layout === 'rows' && (download || onViewPublicProfile) && <div className="nl-pc-dock" style={{ maxWidth: selected.width > selected.height ? 560 : 380 }}>
@@ -351,7 +414,7 @@ export function ProfileCard({ data, download = false, onAvatarUpload, onHeaderUp
         </div>}
         {onPublicFormatChange && <div className="nl-pc-tile-wrap" style={{ '--i': 3 } as CSSProperties}>
           <div className={`nl-pc-tile nl-ico-globe nl-pc-tile-select ${publicSaved ? 'is-saved' : ''}`}>
-            <span className="nl-pc-tile-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{publicSaved ? <path className="nl-ico-check" d="M5 13l4 4L19 7" /> : <><circle cx="12" cy="12" r="9" /><path className="nl-ico-meridian" d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18" /></>}</svg></span>
+            <span className="nl-pc-tile-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{publicSaved ? <path className="nl-ico-check" d="M5 13l4 4L19 7" /> : <><path className="nl-ico-meridian" d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></>}</svg></span>
             <span className="nl-pc-tile-txt"><strong>{publicSaved ? 'Saved' : 'Public view'}</strong><small>Shown as {publicFormat || PREVIEW_FORMAT}</small></span>
             <ChevronDown className="nl-pc-tile-chev" aria-hidden="true" />
             <select value={publicFormat || PREVIEW_FORMAT} onChange={async (e) => { await onPublicFormatChange(e.target.value as FormatKey); setPublicSaved(true); window.setTimeout(() => setPublicSaved(false), 2200); }} aria-label="Card format other readers see on your public profile">{FORMATS.map((f) => <option key={f.key} value={f.key}>{f.key}</option>)}</select>
@@ -366,8 +429,8 @@ export function ProfileCard({ data, download = false, onAvatarUpload, onHeaderUp
         <label className="block text-sm font-semibold mt-5 mb-2">Card layout / dimensions</label>
         <div className="grid grid-cols-2 gap-2">{FORMATS.map((f) => <button key={f.key} type="button" onClick={() => setFormat(f.key)} className="rounded-xl border px-3 py-2.5 text-left" style={{ borderColor: format === f.key ? C.teal : 'var(--color-border)', background: format === f.key ? 'rgba(0,151,178,.10)' : 'transparent' }}><span className="block font-bold">{f.key}</span><span className="block text-xs opacity-70">{f.width} × {f.height} px</span></button>)}</div>
         <label className="block text-sm font-semibold mt-5 mb-2">File format</label>
-        <div className="grid grid-cols-3 gap-2">{([{key:'png',title:'PNG',sub:'Still image'},{key:'pdf',title:'PDF',sub:'Print / save PDF'},{key:'video',title:'Video',sub:'2.5 sec animation'}] as const).map((t) => <button key={t.key} type="button" onClick={() => setExportType(t.key)} className="rounded-xl border p-3 text-left" style={{ borderColor: exportType === t.key ? C.teal : 'var(--color-border)', background: exportType === t.key ? 'rgba(0,151,178,.10)' : 'transparent' }}><span className="block font-bold">{t.title}</span><span className="block text-[11px] mt-1 opacity-70">{t.sub}</span></button>)}</div>
-        <p className="text-xs mt-3" style={{ color: 'var(--color-text-muted)' }}>{exportType === 'video' ? 'Exports MP4 when supported by this browser; otherwise exports WebM. The card animates for about 2.5 seconds.' : exportType === 'pdf' ? 'Opens the browser print dialog; choose “Save as PDF” to save a PDF at the selected card proportions.' : `PNG export at ${exportSelected.width} × ${exportSelected.height} pixels.`}</p>
+        <div className="grid grid-cols-3 gap-2">{([{key:'png',title:'PNG',sub:'Still image'},{key:'pdf',title:'PDF',sub:'Print / save PDF'},{key:'video',title:'Video',sub:'Opening animation'}] as const).map((t) => <button key={t.key} type="button" onClick={() => setExportType(t.key)} className="rounded-xl border p-3 text-left" style={{ borderColor: exportType === t.key ? C.teal : 'var(--color-border)', background: exportType === t.key ? 'rgba(0,151,178,.10)' : 'transparent' }}><span className="block font-bold">{t.title}</span><span className="block text-[11px] mt-1 opacity-70">{t.sub}</span></button>)}</div>
+        <p className="text-xs mt-3" style={{ color: 'var(--color-text-muted)' }}>{exportType === 'video' ? 'Exports MP4 when supported by this browser; otherwise exports WebM. The video plays the opening animation of the card (about 3 seconds); it may take a few seconds to prepare.' : exportType === 'pdf' ? 'Downloads a one-page PDF with rounded corners at the selected card proportions.' : `PNG export at ${exportSelected.width} × ${exportSelected.height} pixels.`}</p>
         <div className="flex gap-2 mt-5"><button type="button" className="btn-ghost" onClick={() => setDownloadMenuOpen(false)}>Cancel</button><button type="button" className="btn-primary" disabled={downloading} onClick={runExport}><Download className="w-4 h-4" />{downloading ? 'Preparing…' : `Export ${exportType === 'video' ? 'video' : exportType.toUpperCase()}`}</button></div>
       </div>
     </div>}
@@ -406,7 +469,7 @@ function Cover({ urls, w, h, radius, iconSize }: { urls: (string | null | undefi
   const src = sources[idx];
   return <div style={{ width: w, height: h, borderRadius: radius, overflow: 'hidden', flexShrink: 0, background: 'linear-gradient(145deg,rgba(255,255,255,.22),rgba(255,255,255,.06))', border: `1px solid ${C.line}`, boxShadow: '0 8px 18px rgba(0,30,40,.35)', display: 'grid', placeItems: 'center' }}>
     <BookOpen width={iconSize} height={iconSize} style={{ color: C.mint, gridArea: '1 / 1' }} />
-    {src && <img key={src} src={src} alt="" crossOrigin="anonymous" referrerPolicy="no-referrer" decoding="async" onError={() => setIdx((i) => i + 1)} style={{ gridArea: '1 / 1', width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />}
+    {src && <img key={src} src={src} alt="" referrerPolicy="no-referrer" decoding="async" onError={() => setIdx((i) => i + 1)} style={{ gridArea: '1 / 1', width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />}
   </div>;
 }
 
@@ -500,8 +563,7 @@ function CardCanvas({ canvasRef, data, width: w, height: h, superBlitz = false, 
   const listValue = (terms: string[]) => questionValues(terms).flatMap((value) => value.split(/[,;|]/).map((v) => v.trim()).filter(Boolean));
 
 
-  const bio = questionValue(['bio', 'about me', 'about', 'reader bio']);
-  const cappedBio = typeof bio === 'string' ? bio.slice(0, 140) : bio;
+  // The reader's About text is no longer printed on the card: it is shown as an intro on the profile page instead.
   const city = questionValue(['city', 'town', 'location', 'residence']);
   const state = questionValue(['state', 'province']);
   const country = questionValue(['country']);
@@ -550,8 +612,8 @@ function CardCanvas({ canvasRef, data, width: w, height: h, superBlitz = false, 
     { value: data.booksThisMonth == null ? '—' : String(data.booksThisMonth), label: 'read this month', icon: <BookOpen width={s(14)} height={s(14)} aria-hidden="true" /> },
     { value: data.totalBooksRead == null ? '—' : String(data.totalBooksRead), label: 'books read', icon: <BookOpen width={s(14)} height={s(14)} aria-hidden="true" /> },
     { value: String(data.publishedBooks), label: 'published reviews', icon: <BookOpen width={s(14)} height={s(14)} aria-hidden="true" /> },
-    // Profile card displays the reviewer R/W average only; NL rating is intentionally omitted.
-    { value: data.avgRating == null ? '—' : Number(data.avgRating).toFixed(1), label: 'average R/W rating', icon: <StarIcon size={s(18)} />, rating: 'rw' },
+    // Profile summaries use the reader's own R/W rating (the rating they gave in their reviews), not the community NL rating.
+    { value: data.avgRating == null ? '—' : Number(data.avgRating).toFixed(1), label: 'average RW rating', icon: <StarIcon size={s(18)} />, rating: 'nl' },
   ];
 
   const statCues = stats.map(() => cue(0.08));
@@ -561,9 +623,9 @@ function CardCanvas({ canvasRef, data, width: w, height: h, superBlitz = false, 
       const m = mv('pop', statCues[i]);
       const tileStyle: CSSProperties = { ...m.style, minWidth: 0, textAlign: 'center', borderRadius: s(18), padding: `${s(isTall ? 10 : isFourFive ? 7 : 13)}px ${s(isFourFive ? 3 : 8)}px`, background: 'linear-gradient(150deg,rgba(255,255,255,.15),rgba(255,255,255,.07))', border: `1px solid ${C.line}`, boxShadow: '0 10px 26px rgba(0,25,35,.22), inset 0 1px 0 rgba(255,255,255,.16)' };
       const bigNum = s(isTall ? 32 : isFourFive ? 25 : 38);
-      if (st.rating) return <div key={st.label} className={m.className} role="img" aria-label={`${st.label} ${st.value}`} title={st.label} style={{ ...tileStyle, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: s(5), background: st.rating === 'rw' ? 'linear-gradient(145deg,rgba(92,225,230,.20),rgba(255,255,255,.07))' : tileStyle.background, borderColor: st.rating === 'rw' ? 'rgba(92,225,230,.48)' : C.line }}>
+      if (st.rating) return <div key={st.label} className={m.className} role="img" aria-label={`${st.label} ${st.value}`} title={st.label} style={{ ...tileStyle, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: s(5), background: st.rating === 'nl' ? 'linear-gradient(145deg,rgba(92,225,230,.20),rgba(255,255,255,.07))' : tileStyle.background, borderColor: st.rating === 'nl' ? 'rgba(92,225,230,.48)' : C.line }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: s(6) }}><p className="font-serif" style={{ fontSize: bigNum, fontWeight: 700, lineHeight: 1, color: C.ink }}><CountUp value={st.value} play={play} still={still} delay={statCues[i]} /></p><StarIcon size={bigNum * 0.82} /></div>
-        <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: s(4), fontSize: s(8), lineHeight: 1.15, letterSpacing: '.1em', textTransform: 'uppercase', fontWeight: 900, color: C.mint, textAlign: 'center' }}><BookOpen width={s(11)} height={s(11)} aria-hidden="true" />Avg R/W Rating</span>
+        <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: s(4), fontSize: s(8), lineHeight: 1.15, letterSpacing: '.1em', textTransform: 'uppercase', fontWeight: 900, color: C.mint, textAlign: 'center' }}><BookOpen width={s(11)} height={s(11)} aria-hidden="true" />Avg RW Rating</span>
       </div>;
       return <div key={st.label} className={m.className} style={tileStyle}>
         <p className="font-serif" style={{ fontSize: bigNum, fontWeight: 700, lineHeight: 1, color: C.ink }}><CountUp value={st.value} play={play} still={still} delay={statCues[i]} /></p>
@@ -593,13 +655,13 @@ function CardCanvas({ canvasRef, data, width: w, height: h, superBlitz = false, 
 
   const shelf = reviews.length > 0 ? <div style={{ borderRadius: s(22), padding: s(isTall ? 13 : 17), background: 'linear-gradient(150deg,rgba(255,255,255,.15),rgba(255,255,255,.07))', border: `1px solid ${C.line}`, boxShadow: '0 14px 32px rgba(0,25,35,.24)' }}>
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: s(10), marginBottom: s(11) }}>
-      <div><p style={{ fontSize: s(11), letterSpacing: '.16em', textTransform: 'uppercase', fontWeight: 800, color: C.mint }}>Published shelf</p><p className="font-serif" style={{ fontSize: s(isTall ? 18 : 22), fontWeight: 700, lineHeight: 1.1, color: C.ink, marginTop: s(2) }}>Reviews on Novelty Library</p></div>
+      <div><p style={{ fontSize: s(11), letterSpacing: '.16em', textTransform: 'uppercase', fontWeight: 800, color: C.mint }}>Published shelf</p><p className="font-serif" style={{ fontSize: s(isTall ? 18 : 22), fontWeight: 700, lineHeight: 1.1, color: C.ink, marginTop: s(2) }}>Reviews given</p></div>
       <span className="font-serif" style={{ fontSize: s(17), fontWeight: 700, minWidth: s(36), textAlign: 'center', borderRadius: 999, padding: `${s(3)}px ${s(8)}px`, background: 'rgba(255,255,255,.16)', border: `1px solid ${C.line}`, color: C.ink }}>{data.publishedReviews.length}</span>
     </div>
     <div style={{ display: 'grid', gridTemplateColumns: isTall ? '1fr' : reviews.length > 1 ? 'repeat(2,minmax(0,1fr))' : '1fr', gap: s(8) }}>
-      {reviews.map((review) => { const nl = review.nlRating ?? review.rating ?? null; const posterSize = s(isTall ? 72 : 90); return <div key={review.id} style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: s(10), borderRadius: s(14), padding: s(8), background: 'rgba(1,43,54,.40)', border: `1px solid ${C.line}` }}>
+      {reviews.map((review) => { const nl = review.nlRating ?? null; const posterSize = s(isTall ? 72 : 90); return <div key={review.id} style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: s(10), borderRadius: s(14), padding: s(8), background: 'rgba(1,43,54,.40)', border: `1px solid ${C.line}` }}>
         <Cover urls={[review.posterUrl, review.coverUrl]} w={posterSize} h={posterSize} radius={s(9)} iconSize={s(22)} />
-        <div style={{ minWidth: 0, flex: 1 }}><p className="font-serif" style={{ fontSize: s(15), fontWeight: 700, color: C.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sanitizeUserText(review.title, 160)}</p><p style={{ fontSize: s(10), color: C.soft, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sanitizeUserText(review.author, 120)}{review.reviewNo ? ` · #${sanitizeUserText(review.reviewNo, 30)}` : ''}</p>{nl != null && nl > 0 && <span style={{ display: 'inline-flex', alignItems: 'center', gap: s(4), marginTop: s(3), fontSize: s(12), fontWeight: 800, color: C.ink }}><StarIcon size={s(14)} />{Number(nl).toFixed(1)}</span>}</div>
+        <div style={{ minWidth: 0, flex: 1 }}><p className="font-serif" style={{ fontSize: s(15), fontWeight: 700, color: C.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sanitizeUserText(review.title, 160)}</p><p style={{ fontSize: s(10), color: C.soft, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sanitizeUserText(review.author, 120)}{review.reviewNo ? ` · #${sanitizeUserText(review.reviewNo, 30)}` : ''}</p>{nl != null && nl > 0 && <span aria-label={`NL rating ${Number(nl).toFixed(1)} out of 10`} title="Novelty Library community rating" style={{ display: 'inline-flex', alignItems: 'center', gap: s(4), marginTop: s(3), fontSize: s(12), fontWeight: 800, color: C.ink }}><StarIcon size={s(14)} />{Number(nl).toFixed(1)}<small style={{ fontSize: s(8), letterSpacing: '.06em', color: C.soft }}>NL</small></span>}</div>
       </div>; })}
     </div>
     {moreReviews > 0 && <span style={{ display: 'inline-flex', marginTop: s(9), borderRadius: 999, padding: `${s(4)}px ${s(9)}px`, background: 'rgba(92,225,230,.10)', border: `1px solid rgba(92,225,230,.26)`, color: C.mint, fontSize: s(9), fontWeight: 800 }}>+{moreReviews} more reviews</span>}
@@ -659,10 +721,10 @@ function CardCanvas({ canvasRef, data, width: w, height: h, superBlitz = false, 
     const sbAvatar = 136;
     const bannerUrl = safeExternalUrl(data.superBlitzBannerUrl || '');
     const sbStats = <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: s(6) }}>
-      {stats.map((st, i) => { const m = mv('pop', statCues[i]); const sbTile: CSSProperties = { ...m.style, minWidth: 0, textAlign: 'center', borderRadius: s(14), padding: `${s(7)}px ${s(3)}px`, background: st.rating === 'rw' ? 'rgba(92,225,230,.18)' : 'rgba(1,43,54,.30)', border: `1px solid ${st.rating === 'rw' ? 'rgba(92,225,230,.48)' : C.line}` };
+      {stats.map((st, i) => { const m = mv('pop', statCues[i]); const sbTile: CSSProperties = { ...m.style, minWidth: 0, textAlign: 'center', borderRadius: s(14), padding: `${s(7)}px ${s(3)}px`, background: st.rating === 'nl' ? 'rgba(92,225,230,.18)' : 'rgba(1,43,54,.30)', border: `1px solid ${st.rating === 'nl' ? 'rgba(92,225,230,.48)' : C.line}` };
         if (st.rating) return <div key={st.label} className={m.className} role="img" aria-label={`${st.label} ${st.value}`} title={st.label} style={{ ...sbTile, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: s(3) }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: s(3) }}><p className="font-serif" style={{ fontSize: s(24), fontWeight: 700, lineHeight: 1, color: C.ink }}><CountUp value={st.value} play={play} still={still} delay={statCues[i]} /></p><StarIcon size={s(20)} /></div>
-          <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: s(3), fontSize: s(6.5), letterSpacing: '.06em', textTransform: 'uppercase', fontWeight: 900, color: C.mint, lineHeight: 1.15 }}><BookOpen width={s(9)} height={s(9)} aria-hidden="true" />Avg R/W</span>
+          <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: s(3), fontSize: s(6.5), letterSpacing: '.06em', textTransform: 'uppercase', fontWeight: 900, color: C.mint, lineHeight: 1.15 }}><BookOpen width={s(9)} height={s(9)} aria-hidden="true" />Avg RW</span>
         </div>;
 
         return <div key={st.label} className={m.className} style={sbTile}>
@@ -690,14 +752,13 @@ function CardCanvas({ canvasRef, data, width: w, height: h, superBlitz = false, 
       </div>
 
       <div className={heroMv.className} style={{ ...heroMv.style, position: 'absolute', left: 45, width: 579, top: 178, display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-        <h2 className="font-serif" style={{ fontSize: 40 * nameScale(data.name || 'Novelty Reader'), fontWeight: 700, lineHeight: 1.05, color: C.ink, overflow: 'hidden', overflowWrap: 'anywhere', maxHeight: 84, minWidth: 0, flexShrink: 1 }}>{sanitizeUserText(data.name || 'Novelty Reader', 120)}</h2>
+        <NameBlock name={data.name || 'Novelty Reader'} size={40} color={C.ink} restColor={C.soft} style={{ flex: '1 1 auto', maxHeight: 84, overflow: 'hidden' }} />
         <p style={{ flexShrink: 0, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 15, fontWeight: 700, padding: '3px 11px', borderRadius: 999, background: C.glassStrong, border: `1px solid ${C.line}`, color: C.mint }}>@{sanitizeUserText(data.username || 'reader', 80)}</p>
         <FollowerPill count={data.followerCount} fontSize={13} padX={10} padY={3} onClick={still ? undefined : onFollowersClick} />
       </div>
 
       <div data-fit style={{ position: 'absolute', left: 45, width: 579, top: 240, height: 530, overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: s(11) }}>
         {details}
-        {bio && <div style={{ width: '100%', boxSizing: 'border-box', borderRadius: 10, padding: '6px 10px', background: 'rgba(255,255,255,.07)', border: `1px solid rgba(255,255,255,.14)`, color: C.soft, fontSize: 10, lineHeight: 1.25, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><b style={{ color: C.mint }}>Bio:</b> {sanitizeUserText(String(bio), 180)}</div>}
         {sbStats}
         {journey}
         {shelf}
@@ -731,7 +792,6 @@ function CardCanvas({ canvasRef, data, width: w, height: h, superBlitz = false, 
     <div style={{ position: 'absolute', left: pad, right: pad, top: Math.max(bannerH - avatar * .45, s(26)), bottom: pad * .7, display: 'flex', flexDirection: 'column', gap: s(isTall ? 11 : 15) }}>
       {/* Hero identity: same semantic order everywhere, composition changes with ratio. */}
       {(() => {
-      const bioLine = cappedBio ? <div style={{ width: '100%', minWidth: 0, boxSizing: 'border-box', borderRadius: s(10), padding: `${s(6)}px ${s(10)}px`, background: 'rgba(255,255,255,.07)', border: `1px solid rgba(255,255,255,.14)`, color: C.soft, fontSize: s(10), lineHeight: 1.25, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: isWide ? 'right' : 'left' }}><b style={{ color: C.mint }}>Bio:</b> {sanitizeUserText(String(cappedBio), 140)}</div> : null;
       const hero = <div className={heroMv.className} style={{ ...heroMv.style, display: isTall ? 'block' : 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,.82fr)', gap: s(18), alignItems: 'center', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: s(18), minWidth: 0 }}>
           <div className={avatarMv.className} style={{ ...avatarMv.style, position: 'relative', width: avatar, height: avatar, flexShrink: 0 }}>
@@ -741,19 +801,17 @@ function CardCanvas({ canvasRef, data, width: w, height: h, superBlitz = false, 
           </div>
           <div style={{ minWidth: 0, flex: 1 }}>
             <p style={{ fontSize: s(10), letterSpacing: '.18em', textTransform: 'uppercase', fontWeight: 800, color: C.mint, marginBottom: s(5) }}>Novelty Library · Reader</p>
-            <h2 className="font-serif" style={{ fontSize: s((isWide ? 54 : 48) * nameScale(data.name || 'Novelty Reader')), fontWeight: 700, lineHeight: 1.04, color: C.ink, textShadow: '0 4px 22px rgba(0,25,35,.5)', overflow: 'hidden', overflowWrap: 'anywhere' }}>{sanitizeUserText(data.name || 'Novelty Reader',120)}</h2>
+            <NameBlock name={data.name || 'Novelty Reader'} size={s(isWide ? 54 : 48)} color={C.ink} restColor={C.soft} shadow="0 4px 22px rgba(0,25,35,.5)" />
             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: s(6), marginTop: s(6) }}><p style={{ display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: s(17), fontWeight: 700, padding: `${s(4)}px ${s(11)}px`, borderRadius: 999, background: C.glassStrong, border: `1px solid ${C.line}`, color: C.mint }}>@{sanitizeUserText(data.username || 'reader',80)}</p><FollowerPill count={data.followerCount} fontSize={s(14)} padX={s(10)} padY={s(4)} onClick={still ? undefined : onFollowersClick} /></div>
-            {bio && isTall && <p style={{ marginTop: s(7), color: C.soft, fontSize: s(11), lineHeight: 1.3 }}>{sanitizeUserText(String(cappedBio), 140)}</p>}
           </div>
         </div>
-        {isWide ? <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'stretch', justifyContent: 'center', gap: s(7) }}>{bioLine}{details}</div> : details}
+        {isWide ? <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'stretch', justifyContent: 'center', gap: s(7) }}>{details}</div> : details}
       </div>;
 
           const body = isWide ? <div data-fit style={{ position: 'relative', minHeight: 0, minWidth: 0, overflow: 'hidden', display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gridTemplateRows: 'auto minmax(0,1fr)', alignContent: 'start', gap: s(8), flex: 1, paddingBottom: s(3) }}>
         <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: s(8) }}>{metrics}{journey}</div>
         <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: s(12) }}>{shelf}{fourFiveQuestions}</div>
       </div> : <div data-fit style={{ position: 'relative', minHeight: 0, minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: s(isTall ? 10 : 13), flex: 1 }}>
-        {!isWide && bioLine}
         {metrics}
         {journey}
         {shelf}

@@ -1,18 +1,27 @@
 import { VerdictBanner } from '@/components/VerdictBanner';
 import { useState, useEffect } from 'react';
-import { ArrowLeft, ExternalLink, Instagram, Calendar, Globe, Tag, Star } from 'lucide-react';
+import { setPageMeta } from '@/lib/seo';
+import { ArrowLeft, ExternalLink, Instagram, Calendar, Globe, Tag, Star, Newspaper, Clock } from 'lucide-react';
 import type { Review } from '@/types/review';
 import { loadReviewCached, peekReview, storeReviewInCache } from '@/lib/reviews';
-import { fetchBlogPosts, blogPostDate, htmlToText } from '@/lib/blog';
+import { fetchBlogPosts, peekBlogPosts, blogPostDate, htmlToText } from '@/lib/blog';
+import { findBlogMetadataFromPosts } from '@/lib/posterMatch';
 import { formatDate } from '@/lib/format';
 import { RatingBadge } from '@/components/RatingBadge';
-import { AdsterraAdSlot } from '@/components/AdsterraAdSlot';
+import { AdSenseAdSlot } from '@/components/AdSenseAdSlot';
 import { PosterImage } from '@/components/PosterImage';
 import { EngagementBar } from '@/components/EngagementBar';
 import { FeedbackModal } from '@/components/FeedbackModal';
 import { FeedbackList } from '@/components/FeedbackList';
 import { ReviewComments } from '@/components/ReviewComments';
+import { SimilarReviews } from '@/components/SimilarReviews';
+import { ReviewShareButton } from '@/components/ReviewShareCard';
+import { genrePath } from '@/pages/GenrePage';
+import { SaveForLater } from '@/components/SaveForLater';
+import { ReadNext } from '@/components/ReadNext';
+import { authorPath, readingMinutes } from '@/lib/readerTools';
 import { useAuth } from '@/lib/auth';
+import { reviewerPath, reviewNoOf, useReviewerIndex } from '@/lib/reviewers';
 import { computeNlRating, deleteFeedback, fetchFeedback, saveFeedback, useEngagement, type FeedbackEntry, type FeedbackInput } from '@/lib/engagement';
 import { sanitizeUserText, safeExternalUrl } from '@/lib/sanitize';
 
@@ -27,14 +36,57 @@ export function ReviewPage({ slug, navigate }: ReviewPageProps) {
   const [error, setError] = useState<string | null>(null);
 
   const { user, profile } = useAuth();
+  const reviewerRows = useReviewerIndex();
+  const reviewerRow = review ? reviewerRows.find((r) => r.review_no === reviewNoOf(review) && r.reviewer_uid) : undefined;
+  const reviewerLink = reviewerRow?.reviewer_uid ? reviewerPath({ uid: reviewerRow.reviewer_uid, username: reviewerRow.novelty_username, hasAccount: reviewerRow.has_account }) : null;
   const engagement = useEngagement();
   const [feedback, setFeedback] = useState<FeedbackEntry[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const myFeedback = feedback.find((f) => f.user_id === user?.id) ?? null;
   const safeImageUrl = (value: string | null | undefined) => safeExternalUrl(value) || null;
 
+  // Warm the Blogger connection while the review is being read so the
+  // external blog opens without waiting for a fresh DNS/TLS connection.
+  useEffect(() => {
+    const url = safeExternalUrl(review?.blog_url);
+    if (!url) return;
+    try {
+      const origin = new URL(url).origin;
+      const existing = document.head.querySelector(`link[rel=\"preconnect\"][href=\"${origin}\"]`);
+      if (existing) return;
+      const link = document.createElement('link');
+      link.rel = 'preconnect';
+      link.href = origin;
+      link.crossOrigin = 'anonymous';
+      document.head.appendChild(link);
+    } catch { /* Invalid URLs are already rejected by safeExternalUrl. */ }
+  }, [review?.blog_url]);
+
+  const prefetchBlog = () => {
+    const url = safeExternalUrl(review?.blog_url);
+    if (!url) return;
+    try {
+      const existing = document.head.querySelector(`link[rel=\"prefetch\"][href=\"${url}\"]`);
+      if (existing) return;
+      const link = document.createElement('link');
+      link.rel = 'prefetch';
+      link.href = url;
+      document.head.appendChild(link);
+    } catch { /* Navigation remains the fallback. */ }
+  };
+
   const loadFeedback = (reviewId: string) => { fetchFeedback(reviewId).then(setFeedback).catch(() => setFeedback([])); };
   useEffect(() => { if (review?.id) loadFeedback(review.id); }, [review?.id]);
+  // Real title / description for search results and share previews once the review has loaded.
+  useEffect(() => {
+    if (!review) return;
+    const t = window.setTimeout(() => setPageMeta({
+      title: `${sanitizeUserText(review.title, 120)}${review.author ? ` by ${sanitizeUserText(review.author, 80)}` : ''} — Book Review | Novelty Library`,
+      description: sanitizeUserText(review.review_text || '', 300) || undefined,
+      image: safeImageUrl(review.poster_url || review.cover_image_url) || undefined,
+    }), 0);
+    return () => window.clearTimeout(t);
+  }, [review?.id, review?.title]);
 
   const requireAuth = (): boolean => {
     if (user) return true;
@@ -68,24 +120,44 @@ export function ReviewPage({ slug, navigate }: ReviewPageProps) {
         if (!data) { setReview(null); setLoading(false); return; }
         setReview((prev) => prev && prev.id === data.id ? prev : data);
         setLoading(false);
-        fetchBlogPosts().catch(() => [])
-          .then((posts) => {
-            if (!alive) return;
-            const blogPost = posts.find((post) => post.title.trim().toLowerCase() === data.title.trim().toLowerCase());
-            if (!blogPost) return;
-            const blogTime = new Date(blogPostDate(blogPost)).getTime();
-            const appTime = new Date(data.updated_at || data.published_at).getTime();
-            if (Number.isFinite(blogTime) && Number.isFinite(appTime) && blogTime > appTime) {
-              const merged = {
-                ...data,
-                review_text: htmlToText(blogPost.content || blogPost.summary) || data.review_text,
-                cover_image_url: data.cover_image_url || blogPost.thumbnail,
-                published_at: blogPostDate(blogPost),
-              };
-              storeReviewInCache(slug, merged);
-              setReview(merged);
-            }
-          });
+        // Fetch the Blogger archive once. Use the same Review No./title matcher
+        // as Publishing Queue, so the public post can show its blog link even
+        // when this deployment has no optional `blog_url` database column.
+        const applyBlog = (posts: Awaited<ReturnType<typeof fetchBlogPosts>>) => {
+          if (!alive || !posts.length) return;
+          const metadata = findBlogMetadataFromPosts([data], posts);
+          const no = Number(data.review_number ?? data.master_review_no);
+          const matched = Number.isInteger(no) ? metadata[String(no)] : undefined;
+          const blogPost = (matched?.blogUrl && posts.find((post) => post.url === matched.blogUrl))
+            || posts.find((post) => post.title.trim().toLowerCase() === data.title.trim().toLowerCase());
+          if (!matched?.blogUrl && !blogPost) return;
+
+          const blogDate = blogPost ? blogPostDate(blogPost) : matched?.publishedOn;
+          const blogTime = blogDate ? new Date(blogDate).getTime() : Number.NaN;
+          const appTime = new Date(data.updated_at || data.published_at).getTime();
+          const blogIsNewer = Number.isFinite(blogTime) && Number.isFinite(appTime) && blogTime > appTime;
+          const merged: Review = {
+            ...data,
+            // A URL saved by an admin is authoritative; the Blogger crawl is only a fallback.
+            blog_url: data.blog_url || matched?.blogUrl || blogPost?.url || null,
+            // Recover missing affiliate links for older community rows without
+            // writing any additional fields/columns into Supabase.
+            poster_link: data.poster_link || matched?.posterLink || null,
+            ...(blogIsNewer && blogPost ? {
+              review_text: htmlToText(blogPost.content || blogPost.summary) || data.review_text,
+              cover_image_url: data.cover_image_url || blogPost.thumbnail,
+              published_at: blogDate || data.published_at,
+            } : {}),
+          };
+          if (merged.blog_url !== data.blog_url || merged.poster_link !== data.poster_link || blogIsNewer) {
+            storeReviewInCache(slug, merged);
+            setReview(merged);
+          }
+        };
+        // Cached archive (memory or last visit) applies instantly; the network refresh follows quietly.
+        const cachedPosts = peekBlogPosts();
+        if (cachedPosts) applyBlog(cachedPosts);
+        fetchBlogPosts().catch(() => []).then((posts) => { if (posts !== cachedPosts) applyBlog(posts); });
       })
       .catch((err) => { if (!alive) return; setError(err.message); setLoading(false); });
     return () => { alive = false; };
@@ -173,13 +245,29 @@ export function ReviewPage({ slug, navigate }: ReviewPageProps) {
                 <ExternalLink className="w-4 h-4" /> Buy Now
               </a>
             )}
+
+            <ReviewShareButton review={review} nl={computeNlRating(review.rw_rating, engagement.statsFor(review.id))} />
+            <SaveForLater reviewId={review.id} navigate={navigate} />
+
+            {safeExternalUrl(review.blog_url) && (
+              <a
+                href={safeExternalUrl(review.blog_url) || '#'}
+                target="_blank"
+                rel="noopener noreferrer"
+                onMouseEnter={prefetchBlog}
+                onFocus={prefetchBlog}
+                className="nl-view-blog w-full mt-3"
+              >
+                <Newspaper className="w-4 h-4" aria-hidden="true" /> View in Blog <ArrowLeft className="w-4 h-4 rotate-180 nl-view-blog-arrow" aria-hidden="true" />
+              </a>
+            )}
           </div>
 
           {/* Content */}
           <div className="md:col-span-3 nl-fast-up" style={{ animationDelay: '40ms' }}>
             {review.verdict && <div className="mb-3"><VerdictBanner verdict={review.verdict} /></div>}
             <div className="flex flex-wrap gap-2 mb-4">
-              <span className="nl-chip px-4 py-1.5 text-[13px] font-semibold">{sanitizeUserText(review.genre, 80)}</span>
+              {review.genre && <button type="button" className="nl-chip px-4 py-1.5 text-[13px] font-semibold nl-genre-link" onClick={() => navigate(genrePath(review.genre))} title={`More ${review.genre} reviews`}>{sanitizeUserText(review.genre, 80)}</button>}
               {review.traits?.split(',').map((trait) => (
                 <span key={sanitizeUserText(trait.trim(), 60)} className="px-3 py-1 rounded-full text-xs font-medium" style={{ background: 'rgba(0, 151, 178, 0.06)', color: 'var(--color-text-muted)' }}>
                   {sanitizeUserText(trait.trim(), 60)}
@@ -190,7 +278,8 @@ export function ReviewPage({ slug, navigate }: ReviewPageProps) {
             <h1 className="font-serif text-4xl md:text-5xl font-semibold leading-tight tracking-tight mb-3 text-balance" style={{ color: 'var(--color-text)' }}>
               {sanitizeUserText(review.title, 200)}
             </h1>
-            <p className="text-lg mb-6" style={{ color: 'var(--color-text-muted)' }}>by {sanitizeUserText(review.author, 120)}</p>
+            <p className="text-lg mb-6" style={{ color: 'var(--color-text-muted)' }}>by{' '}
+              {review.author ? <button type="button" className="nl-author-link" onClick={() => navigate(authorPath(review.author))} title={`More reviews of ${review.author}`}>{sanitizeUserText(review.author, 120)}</button> : 'an unknown author'}</p>
 
             {/* Ratings */}
             <div className="flex flex-wrap items-center gap-3 mb-6">
@@ -222,6 +311,7 @@ export function ReviewPage({ slug, navigate }: ReviewPageProps) {
               <span className="flex items-center gap-1.5">
                 <Globe className="w-4 h-4" /> {sanitizeUserText(review.language, 80)}
               </span>
+              <span className="flex items-center gap-1.5"><Clock className="w-4 h-4" /> {readingMinutes(review.review_text)} min read</span>
               {review.translated_from && (
                 <span className="flex items-center gap-1.5">
                   Translated from {sanitizeUserText(review.translated_from, 80)}
@@ -231,6 +321,12 @@ export function ReviewPage({ slug, navigate }: ReviewPageProps) {
                 <span className="flex items-center gap-1.5">
                   {sanitizeUserText(review.series_name, 120)}{review.series_number ? ` #${review.series_number}` : ''}
                 </span>
+              )}
+              {!review.novelty_username && reviewerLink && (
+                <button type="button" onClick={() => navigate(reviewerLink)} className="inline-flex items-center gap-1.5 font-semibold hover:underline" style={{ color: 'var(--color-teal-dark)' }}>
+                  <span className="nl-handle-box" aria-hidden="true">NL</span>
+                  {sanitizeUserText(review.reviewer_name || 'Reviewer', 60)}
+                </button>
               )}
               {(review.reviewer_handle || review.novelty_username) && (
                 <span className="flex items-center gap-2">
@@ -270,7 +366,21 @@ export function ReviewPage({ slug, navigate }: ReviewPageProps) {
               </div>
             )}
 
-            {/* Reader reviews (likes / ratings / reviews on this post) */}
+            {/* Discovery blocks sit above the ad, so the page ends: ad, ratings note, reader reviews, comments. */}
+            <SimilarReviews current={review} navigate={navigate} />
+
+            <ReadNext current={review} navigate={navigate} />
+
+            <AdSenseAdSlot className="mt-8 mb-8" />
+
+            {/* Disclaimer */}
+            <div className="mt-8 p-4 rounded-xl" style={{ background: 'var(--color-paper)', border: '1px solid var(--color-border)' }}>
+              <p className="text-xs leading-relaxed" style={{ color: 'var(--color-text-muted)' }}>
+                The R/W Rating reflects the specific reviewer's opinion. The NL Rating is the cumulative average of all ratings submitted by Novelty Library readers on this community review post. A book's impression varies from reader to reader. For a broader platform perspective, refer to the Goodreads rating.
+              </p>
+            </div>
+
+            {/* Rate & review, then the readers' comments (kept together, right after the note about ratings) */}
             <section className="mt-10 pt-6" style={{ borderTop: '1px solid var(--color-border)' }}>
               <div className="flex items-center justify-between gap-3 mb-4">
                 <h2 className="font-serif text-xl font-semibold" style={{ color: 'var(--color-text)' }}>Reader reviews ({feedback.length})</h2>
@@ -281,14 +391,6 @@ export function ReviewPage({ slug, navigate }: ReviewPageProps) {
 
             <ReviewComments reviewId={review.id} navigate={navigate} />
 
-            <AdsterraAdSlot className="mt-8 mb-8" />
-
-            {/* Disclaimer */}
-            <div className="mt-8 p-4 rounded-xl" style={{ background: 'var(--color-paper)', border: '1px solid var(--color-border)' }}>
-              <p className="text-xs leading-relaxed" style={{ color: 'var(--color-text-muted)' }}>
-                The R/W Rating reflects the specific reviewer's opinion. The NL Rating is the cumulative average of all ratings submitted by Novelty Library readers on this community review post. A book's impression varies from reader to reader. For a broader platform perspective, refer to the Goodreads rating.
-              </p>
-            </div>
           </div>
         </div>
       </div>

@@ -1,7 +1,8 @@
 import { useEffect, useState, type ChangeEvent } from 'react';
-import { Clock3, ImagePlus, Sparkles, Upload, X } from 'lucide-react';
+import { Clock3, ImagePlus, Camera, Upload, X } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
-import { createStory, uploadStoryImage } from '@/lib/social';
+import { createStory, uploadStoryImage, STORY_RETENTION_NOTE } from '@/lib/social';
+import { useOverlayHistory } from '@/lib/overlayHistory';
 
 interface StoryComposerModalProps {
   open: boolean;
@@ -26,6 +27,7 @@ export function StoryComposerModal({ open, onClose, onPublished }: StoryComposer
     if (uploading) return;
     resetDraft(); onClose();
   };
+  useOverlayHistory(open, closeComposer);
 
   useEffect(() => {
     if (!open) return;
@@ -68,9 +70,10 @@ export function StoryComposerModal({ open, onClose, onPublished }: StoryComposer
       <section className="nl-story-modal" role="dialog" aria-modal="true" aria-labelledby="nl-story-modal-title">
         <div className="nl-story-modal-head">
           <div className="min-w-0">
-            <span className="nl-story-modal-kicker"><Sparkles className="w-3.5 h-3.5" /> YOUR 24-HOUR STORY</span>
+            <span className="nl-story-modal-kicker"><Camera className="w-3.5 h-3.5" /> YOUR 24-HOUR STORY</span>
             <h2 id="nl-story-modal-title">Share a reading moment</h2>
             <p>Post a photo for your followers. It disappears after 24 hours.</p>
+            <p className="nl-story-retention">{STORY_RETENTION_NOTE}</p>
           </div>
           <button type="button" className="nl-story-modal-close" onClick={closeComposer} disabled={uploading} aria-label="Close story composer"><X className="w-5 h-5" /></button>
         </div>

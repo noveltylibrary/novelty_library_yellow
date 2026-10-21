@@ -11,7 +11,7 @@ This folder includes editable Markdown source documents and matching Microsoft W
 - `TASKS.md` / `TASKS.docx` / `TASKS.pdf` — Implementation status and development backlog.
 - `README.md` / `README.docx` / `README.pdf` — Project orientation and development guide.
 - `INDEX.md` / `INDEX.docx` / `INDEX.pdf` — Documentation index.
-- `CHANGELOG_1_82.md` / `CHANGELOG_1_82.docx` / `CHANGELOG_1_82.pdf` — Version 1.82 profile-card and export updates.
+- `CHANGELOG.md` — every version's release notes in one file, newest first.
 
 ## Formats
 
@@ -20,3 +20,4 @@ This folder includes editable Markdown source documents and matching Microsoft W
 - Use `.pdf` for sharing and read-only distribution.
 
 **Important:** The documentation describes the codebase and requirements captured in the existing source documents. Verify all deployment-critical details and checklist items against the exact release before production deployment.
+

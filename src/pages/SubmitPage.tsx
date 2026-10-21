@@ -2,15 +2,18 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ArrowLeft, Send, Star, PenTool, Search, Upload,
   Save, Lock, Eye, Edit3, Download, AlertCircle, X,
-  Clock, BookOpen, Sparkles, Heart, Plus, Trash2, FileText, ChevronRight
+  Clock, BookOpen, ClipboardCheck, Heart, Plus, Trash2, FileText, ChevronRight
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
+import { useSubmitFreeze } from '@/lib/submitFreeze';
+import { SubmitFrozenNotice } from '@/components/SubmitFrozenNotice';
 import { VERDICTS, normalizeVerdict, verdictRatingWarning, type Verdict } from '@/lib/verdict';
 import { VerdictIcon, VerdictBanner } from '@/components/VerdictBanner';
 import { supabase } from '@/lib/supabase';
 import { submitReview, searchOpenLibrary, uploadCoverImage, saveDraft, loadDrafts, checkBookAvailability, createBookReservation, type OpenLibraryResult, type SavedReviewDraft } from '@/lib/reviews';
 import { getErrorMessage } from '@/lib/format';
 import type { Review } from '@/types/review';
+import { useOverlayHistory } from '@/lib/overlayHistory';
 
 interface SubmitPageProps {
   navigate: (path: string) => void;
@@ -182,7 +185,10 @@ function reviewQualityTips(text: string): string[] {
 }
 
 export function SubmitPage({ navigate }: SubmitPageProps) {
-  const { user, profile, loading: authLoading } = useAuth();
+  const { user, profile, loading: authLoading, isAdmin } = useAuth();
+  const freeze = useSubmitFreeze();
+  const locked = freeze.frozen && !isAdmin;
+  const [freezeOpenTick, setFreezeOpenTick] = useState(0);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -191,10 +197,13 @@ export function SubmitPage({ navigate }: SubmitPageProps) {
   const [savedDrafts, setSavedDrafts] = useState<SavedReviewDraft[]>([]);
   const [selectedDraftId, setSelectedDraftId] = useState('');
   const [draftModalOpen, setDraftModalOpen] = useState(false);
+  useOverlayHistory(draftModalOpen, () => setDraftModalOpen(false));
   // Verdict vs R/W rating sanity check: shows a confirm dialog instead of silently submitting a mismatch.
   const [mismatch, setMismatch] = useState<{ message: string; mode: 'new' | 'edit' } | null>(null);
+  useOverlayHistory(mismatch !== null, () => setMismatch(null));
   const [draftName, setDraftName] = useState('');
   const [reservationModalOpen, setReservationModalOpen] = useState(false);
+  useOverlayHistory(reservationModalOpen, () => setReservationModalOpen(false));
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const openFromHash = () => {
@@ -209,6 +218,7 @@ export function SubmitPage({ navigate }: SubmitPageProps) {
     return () => window.removeEventListener('hashchange', openFromHash);
   }, []);
   const [loadDraftModalOpen, setLoadDraftModalOpen] = useState(false);
+  useOverlayHistory(loadDraftModalOpen, () => setLoadDraftModalOpen(false));
   const [reservationBook, setReservationBook] = useState('');
   const [reservationAuthor, setReservationAuthor] = useState('');
   const [reservationSubmitting, setReservationSubmitting] = useState(false);
@@ -489,6 +499,7 @@ export function SubmitPage({ navigate }: SubmitPageProps) {
 
   const handleSubmit = async (e?: React.FormEvent, skipVerdictCheck = false) => {
     e?.preventDefault();
+    if (locked) { setFreezeOpenTick((n) => n + 1); return; }
 
     // Honeypot check: a real visitor never sees or fills this field. If it
     // has any value, this is a bot — abort silently with no Supabase write
@@ -1107,7 +1118,7 @@ export function SubmitPage({ navigate }: SubmitPageProps) {
             <button type="button" onClick={() => navigate('/review-guidelines')} className="btn-ghost inline-flex items-center gap-2 rounded-full px-5 py-3 text-sm nl-guide-glow-btn">
               <FileText className="w-4 h-4" /> Review Guidelines
             </button>
-            <button id="reserve" type="button" onClick={() => setReservationModalOpen(true)} className="inline-flex items-center gap-2 rounded-full px-5 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5" style={{ background: 'var(--color-teal-dark)' }}>
+            <button id="reserve" type="button" disabled={locked} onClick={() => setReservationModalOpen(true)} className="inline-flex items-center gap-2 rounded-full px-5 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5" style={{ background: 'var(--color-teal-dark)' }}>
               <BookOpen className="w-4 h-4" /> Reserve a Book
             </button>
             <button type="button" onClick={() => void openLoadDraftModal()} className="btn-ghost inline-flex items-center gap-2 rounded-full px-5 py-3 text-sm">
@@ -1117,6 +1128,7 @@ export function SubmitPage({ navigate }: SubmitPageProps) {
           <p className="text-[11px] mt-3" style={{ color: 'var(--color-text-muted)' }}>Read the submission guidelines, reserve a book without writing a review, or load one of your saved drafts.</p>
         </div>
 
+        <fieldset disabled={locked} className="nl-freeze-fieldset" data-locked={locked ? 'true' : undefined}>
         {/* Open Library Search */}
         <div className="surface-card p-5 mb-6">
           <div className="flex items-center gap-2 mb-3">
@@ -1164,12 +1176,13 @@ export function SubmitPage({ navigate }: SubmitPageProps) {
                     <p className="text-xs truncate" style={{ color: 'var(--color-text-muted)' }}>{r.author}{r.publishYear ? ` · ${r.publishYear}` : ''}{r.language ? ` · ${r.language}` : ''}</p>
                     {r.subjects.length > 0 && <p className="text-[10px] truncate mt-0.5" style={{ color: 'var(--color-text-muted)' }}>{r.subjects.slice(0, 3).join(' · ')}</p>}
                   </div>
-                  <Sparkles className="w-4 h-4" style={{ color: 'var(--color-teal-dark)' }} />
+                  <ChevronRight className="w-4 h-4" style={{ color: 'var(--color-teal-dark)' }} />
                 </button>
               ))}
             </div>
           )}
         </div>
+        </fieldset>
 
         {/* Form progress — tracks only the compulsory (*) questions, and
             stays accurate through autofill via syncAutofill on each field. */}
@@ -1217,7 +1230,10 @@ export function SubmitPage({ navigate }: SubmitPageProps) {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-6">
+        {freeze.frozen && <SubmitFrozenNotice reason={freeze.reason} note={freeze.note} adminBypass={isAdmin} forceOpen={freezeOpenTick} />}
+
+        <form onSubmit={handleSubmit}>
+          <fieldset disabled={locked} className="nl-freeze-fieldset space-y-6" data-locked={locked ? 'true' : undefined}>
           {/*
             Honeypot spam trap — invisible to sighted users and removed from
             the accessibility tree, so it should never be seen or filled in
@@ -1273,7 +1289,7 @@ export function SubmitPage({ navigate }: SubmitPageProps) {
             <div className="quality-helper">
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div className="flex items-center gap-2">
-                  <Sparkles className="w-4 h-4" style={{ color: 'var(--color-teal-dark)' }} />
+                  <ClipboardCheck className="w-4 h-4" style={{ color: 'var(--color-teal-dark)' }} />
                   <span className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>Review quality helper</span>
                 </div>
                 <span className="text-xs font-semibold" style={{ color: form.review_text.trim().length >= 100 ? 'var(--color-teal-dark)' : '#ef4444' }}>
@@ -1374,10 +1390,11 @@ export function SubmitPage({ navigate }: SubmitPageProps) {
           <button type="submit" disabled={submitting} className="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed">
             {submitting ? 'Submitting...' : (<><Send className="w-4 h-4" /> Submit Review</>)}
           </button>
+          </fieldset>
         </form>
 
         <div className="draft-actions flex mt-6">
-          <button type="button" onClick={openDraftSaveModal} className="btn-ghost text-sm w-full">
+          <button type="button" onClick={openDraftSaveModal} disabled={locked} className="btn-ghost text-sm w-full disabled:opacity-50">
             <Save className="w-4 h-4" /> Save Draft
           </button>
         </div>

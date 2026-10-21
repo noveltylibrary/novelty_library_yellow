@@ -1,21 +1,23 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   ArrowLeft, Check, X, Edit3, Trash2, Star, Save,
-  Clock, CheckCircle2, XCircle, Search, AlertCircle, Send
+  Clock, CheckCircle2, XCircle, Search, AlertCircle, Send, Flag, Bell
 } from 'lucide-react';
 import type { Review, ReviewStatus } from '@/types/review';
 import {
-  fetchAllReviewsForAdmin, updateReviewStatus, updateReview, deleteReview, publishReviewToMasterList
+  fetchAllReviewsForAdmin, updateReviewStatus, updateReview, deleteReview, publishReviewToMasterList, syncAcceptedReviewsFromSheet
 } from '@/lib/reviews';
 import { useAuth } from '@/lib/auth';
 import { formatShortDate, getErrorMessage } from '@/lib/format';
+import { adminSendNotification } from '@/lib/notifications';
+import { AdminNotifyModal } from '@/components/AdminNotifyModal';
 
 interface AdminReviewsPageProps {
   navigate: (path: string) => void;
   embedded?: boolean;
 }
 
-type Tab = 'pending' | 'approved' | 'declined' | 'all';
+type Tab = 'pending' | 'marked' | 'approved' | 'declined' | 'all';
 
 export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPageProps) {
   const { user, isAdmin, loading: authLoading } = useAuth();
@@ -33,6 +35,8 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
   // filled in = assign that exact integer instead.
   const [reviewNoInputs, setReviewNoInputs] = useState<Record<string, string>>({});
   const [reviewNoError, setReviewNoError] = useState<string | null>(null);
+  // Review the admin is currently writing a notification for (null = dialog closed).
+  const [notifyTarget, setNotifyTarget] = useState<Review | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -57,6 +61,7 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
   const filtered = useMemo(() => {
     let result = reviews;
     if (tab === 'pending') result = result.filter((r) => r.status === 'pending');
+    else if (tab === 'marked') result = result.filter((r) => r.status === 'marked');
     else if (tab === 'approved') result = result.filter((r) => r.status === 'approved');
     else if (tab === 'declined') result = result.filter((r) => r.status === 'declined');
     if (search.trim()) {
@@ -73,19 +78,31 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
 
   const counts = useMemo(() => ({
     pending: reviews.filter((r) => r.status === 'pending').length,
+    marked: reviews.filter((r) => r.status === 'marked').length,
     approved: reviews.filter((r) => r.status === 'approved').length,
     declined: reviews.filter((r) => r.status === 'declined').length,
     all: reviews.length,
   }), [reviews]);
 
-  // Generic status change for Reject / Mark for Review — Accept has its own
-  // handler below because it also needs to resolve a Review No.
-  const handleStatusChange = async (id: string, status: ReviewStatus) => {
+  // Pending submissions have one workflow suggestion: Mark for Review.
+  // Once marked, the admin gets the two final decisions: Approve or Decline.
+  // Decline removes the submission entirely instead of leaving a declined row.
+  const handleMarkForReview = async (id: string) => {
     try {
-      await updateReviewStatus(id, status);
+      await updateReviewStatus(id, 'marked');
       await loadReviews();
     } catch (err) {
-      setError(getErrorMessage(err, 'Failed to update status'));
+      setError(getErrorMessage(err, 'Failed to mark review for review'));
+    }
+  };
+
+  const handleDecline = async (review: Review) => {
+    if (!confirm(`Decline and permanently remove “${review.title || 'Untitled review'}” from Submitted Reviews?`)) return;
+    try {
+      await deleteReview(review.id);
+      await loadReviews();
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to decline review'));
     }
   };
 
@@ -110,9 +127,28 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
     });
   };
 
-  // Accepting a review: sets its status to 'approved' (moving it out of
-  // Submitted) and creates its Master List row, which is what makes it show
-  // up in Accepted Reviews List. If the admin typed a Review No. into the
+  // Automatic message to the reviewer once their review is accepted into the Master List. Best-effort: a failed
+  // notification never blocks or undoes the acceptance. `dedupe` stops a double if the admin retries.
+  const notifyAccepted = async (review: Review, reviewNo: string | number): Promise<string | null> => {
+    if (!review.user_id) return null;
+    try {
+      await adminSendNotification({
+        userId: review.user_id,
+        title: 'Your review was accepted',
+        body: `Good news — your review of “${review.title}”${review.author ? ` by ${review.author}` : ''} has been accepted as Review No. ${reviewNo}. Thank you for reviewing with Novelty Library!`,
+        dedupe: true,
+      });
+      return null;
+    } catch (err) {
+      return getErrorMessage(err, 'notification could not be sent');
+    }
+  };
+
+  // Accepting a review is deliberately transactional at the UI workflow level:
+  // 1) refresh the Accepted Reviews Google Sheet into master_list,
+  // 2) reject duplicate Review No. values before changing the submission status,
+  // 3) create the new master row, then
+  // 4) mark the submitted review approved. A failed sync/duplicate never accepts it. If the admin typed a Review No. into the
   // editable column, that exact number is used; if they left it blank, the
   // next sequential number (MAX(review_no) + 1) is auto-calculated.
   const handleAccept = async (review: Review) => {
@@ -138,20 +174,25 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
     }
 
     try {
-      await updateReviewStatus(review.id, 'approved');
       setPublishingId(review.id);
       try {
+        // Always refresh Accepted Reviews from the Google Sheet BEFORE trying
+        // to create the Supabase master row. This catches a Review No. that
+        // was added to the sheet by another admin/process since the last sync.
+        await syncAcceptedReviewsFromSheet();
         const { reviewNo, alreadyPublished } = await publishReviewToMasterList(review, customNo);
+        await updateReviewStatus(review.id, 'approved');
+        const notifyErr = alreadyPublished ? null : await notifyAccepted(review, reviewNo);
         setPublishMsg(
           alreadyPublished
             ? `"${review.title}" is already in the Master List as Review No. ${reviewNo}`
-            : `Accepted — Review No. ${reviewNo} created in the Master List for "${review.title}"`
+            : `Accepted — Review No. ${reviewNo} created in the Master List for "${review.title}"${review.user_id ? (notifyErr ? ` (reviewer could not be notified: ${notifyErr})` : ' · reviewer notified') : ''}`
         );
         setTimeout(() => setPublishMsg(null), 6000);
         clearReviewNoInput(review.id);
       } catch (publishErr) {
         setError(
-          `Review accepted, but adding it to the Master List failed: ${getErrorMessage(publishErr, 'unknown error')}`
+          `Approval stopped — the Accepted Reviews sheet/master sync check failed: ${getErrorMessage(publishErr, 'unknown error')}. The submission was not approved. Reapply after fixing the issue.`
         );
       } finally {
         setPublishingId(null);
@@ -179,10 +220,11 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
     setPublishingId(review.id);
     try {
       const { reviewNo, alreadyPublished } = await publishReviewToMasterList(review, customNo);
+      const notifyErr = alreadyPublished ? null : await notifyAccepted(review, reviewNo);
       setPublishMsg(
         alreadyPublished
           ? `"${review.title}" is already in the Master List as Review No. ${reviewNo}`
-          : `Review No. ${reviewNo} created in the Master List for "${review.title}"`
+          : `Review No. ${reviewNo} created in the Master List for "${review.title}"${review.user_id ? (notifyErr ? ` (reviewer could not be notified: ${notifyErr})` : ' · reviewer notified') : ''}`
       );
       setTimeout(() => setPublishMsg(null), 6000);
       clearReviewNoInput(review.id);
@@ -271,6 +313,7 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
 
   const tabs: { key: Tab; label: string; icon: typeof Clock; count: number }[] = [
     { key: 'pending', label: 'Pending', icon: Clock, count: counts.pending },
+    { key: 'marked', label: 'Mark for Review', icon: Flag, count: counts.marked },
     { key: 'approved', label: 'Approved', icon: CheckCircle2, count: counts.approved },
     { key: 'declined', label: 'Declined', icon: XCircle, count: counts.declined },
     { key: 'all', label: 'All', icon: Search, count: counts.all },
@@ -290,8 +333,8 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
             <h1 className="font-serif text-3xl font-semibold tracking-tight" style={{ color: 'var(--color-text)' }}>Submitted Reviews List</h1>
           </div>
           <p className="text-sm mt-1" style={{ color: 'var(--color-text-muted)' }}>
-            Review user submissions. Set a Review No. (or leave it blank to auto-assign the next one) and Accept to
-            move a review into the Accepted Reviews List.
+            Review user submissions. Pending entries can be marked for review; marked entries can then be approved or declined.
+            Approval syncs the Accepted Reviews Google Sheet first, checks the Review No., and only then creates the Supabase Accepted Reviews row.
           </p>
         </div>
       </div>
@@ -357,7 +400,7 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
           {!loading && filtered.length === 0 && (
             <div className="text-center py-20">
               <CheckCircle2 className="w-12 h-12 mx-auto mb-4" style={{ color: 'var(--color-text-muted)', opacity: 0.3 }} />
-              <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>No {tab !== 'all' ? tab : ''} reviews found.</p>
+              <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>No {tab === 'marked' ? 'marked-for-review' : tab !== 'all' ? tab : ''} reviews found.</p>
             </div>
           )}
 
@@ -414,6 +457,7 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
                         </div>
                         <select value={editForm.status || 'pending'} onChange={(e) => setEditForm({ ...editForm, status: e.target.value as ReviewStatus })} className="input-field">
                           <option value="pending">Pending</option>
+                          <option value="marked">Marked for Review</option>
                           <option value="approved">Approved</option>
                           <option value="declined">Declined</option>
                         </select>
@@ -497,32 +541,27 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
                           </div>
                         )}
                         <div className="flex flex-wrap gap-2">
-                          {review.status !== 'approved' && (
-                            <button onClick={() => handleAccept(review)} disabled={publishingId === review.id} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors" style={{ background: 'rgba(53, 211, 217, 0.1)', color: 'var(--color-teal-dark)' }}>
-                              <Check className="w-3.5 h-3.5" /> {publishingId === review.id ? 'Accepting...' : 'Accept'}
+                          {review.status === 'pending' && (
+                            <button onClick={() => handleMarkForReview(review.id)} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#d97706' }}>
+                              <Flag className="w-3.5 h-3.5" /> Mark for Review
                             </button>
+                          )}
+                          {review.status === 'marked' && (
+                            <>
+                              <button onClick={() => handleAccept(review)} disabled={publishingId === review.id} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors" style={{ background: 'rgba(53, 211, 217, 0.1)', color: 'var(--color-teal-dark)' }}>
+                                <Check className="w-3.5 h-3.5" /> {publishingId === review.id ? 'Accepting...' : 'Approve'}
+                              </button>
+                              <button onClick={() => handleDecline(review)} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}>
+                                <X className="w-3.5 h-3.5" /> Decline
+                              </button>
+                            </>
                           )}
                           <button onClick={() => startEdit(review)} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors" style={{ background: 'rgba(0, 151, 178, 0.06)', color: 'var(--color-text-muted)' }}>
                             <Edit3 className="w-3.5 h-3.5" /> Edit
                           </button>
-                          {review.status !== 'declined' && (
-                            <button onClick={() => handleStatusChange(review.id, 'declined')} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}>
-                              <X className="w-3.5 h-3.5" /> Reject
-                            </button>
-                          )}
-                          {review.status !== 'pending' && (
-                            <button onClick={() => handleStatusChange(review.id, 'pending')} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#d97706' }}>
-                              <Clock className="w-3.5 h-3.5" /> Mark for Review
-                            </button>
-                          )}
-                          {review.status === 'approved' && !review.master_review_no && (
-                            <button
-                              onClick={() => handleAddToMasterList(review)}
-                              disabled={publishingId === review.id}
-                              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-                              style={{ background: 'var(--color-teal-dark)', color: 'white' }}
-                            >
-                              <Send className="w-3.5 h-3.5" /> {publishingId === review.id ? 'Adding...' : 'Add to Master List'}
+                          {review.user_id && (
+                            <button onClick={() => setNotifyTarget(review)} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors" style={{ background: 'rgba(0, 151, 178, 0.1)', color: 'var(--color-teal-dark)' }} title="Send this reviewer a notification">
+                              <Bell className="w-3.5 h-3.5" /> Notify
                             </button>
                           )}
                           <button onClick={() => handleDelete(review.id)} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors" style={{ background: 'rgba(239, 68, 68, 0.06)', color: 'rgba(239, 68, 68, 0.6)' }}>
@@ -536,6 +575,15 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
               ))}
             </div>
           )}
+      <AdminNotifyModal
+        open={!!notifyTarget}
+        onClose={() => setNotifyTarget(null)}
+        userId={notifyTarget?.user_id || ''}
+        recipientLabel={notifyTarget ? (notifyTarget.reviewer_name || notifyTarget.reviewer_email || 'this reviewer') : ''}
+        context={notifyTarget?.title}
+        defaultTitle={notifyTarget ? `About your review of “${notifyTarget.title}”` : ''}
+        onSent={(m) => { setPublishMsg(m); setTimeout(() => setPublishMsg(null), 6000); }}
+      />
     </div>
   );
 }
@@ -543,6 +591,7 @@ export function AdminReviewsPage({ navigate, embedded = false }: AdminReviewsPag
 function StatusBadge({ status }: { status: ReviewStatus }) {
   const config = {
     pending: { icon: Clock, label: 'Pending', bg: 'rgba(245, 158, 11, 0.1)', text: '#d97706' },
+    marked: { icon: Flag, label: 'Marked for Review', bg: 'rgba(124, 58, 237, 0.1)', text: '#7c3aed' },
     approved: { icon: CheckCircle2, label: 'Approved', bg: 'rgba(53, 211, 217, 0.1)', text: 'var(--color-teal-dark)' },
     declined: { icon: XCircle, label: 'Declined', bg: 'rgba(239, 68, 68, 0.1)', text: '#ef4444' },
   };

@@ -1,9 +1,10 @@
 import { useState, type ComponentType } from 'react';
-import { BookOpen, Users, Heart, Sparkles, PenTool, ArrowRight, ChevronDown, Globe2, ShieldCheck, Languages, Sparkle, Library, Compass, Wand2, BarChart3, FileText } from 'lucide-react';
+import { BookOpen, Users, Heart, PenTool, ArrowRight, ChevronDown, Globe2, ShieldCheck, Languages, Star, Library, Compass, Feather, BarChart3, Trophy, FileText, Newspaper, Instagram } from 'lucide-react';
 import type { AboutSection } from '@/lib/aboutSections';
+import { BLOG_URL, INSTAGRAM_URL } from '@/lib/links';
 
 const ICONS: Record<string, ComponentType<{ className?: string; style?: React.CSSProperties }>> = {
-  book: BookOpen, sparkles: Sparkle, heart: Heart, users: Users, globe: Globe2, languages: Languages, shield: ShieldCheck, library: Library, compass: Compass, wand: Wand2, pen: PenTool,
+  book: BookOpen, sparkles: Star, heart: Heart, users: Users, globe: Globe2, languages: Languages, shield: ShieldCheck, library: Library, compass: Compass, wand: Feather, pen: PenTool,
 };
 
 const paragraphs = (text: string) => text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
@@ -42,9 +43,9 @@ export function AboutSectionBlock({ section, email, navigate }: { section: About
     case 'hero':
       return <div className="nl-about-hero text-center mb-16">
         <div className="nl-about-orbit" aria-hidden="true" />
-        <div className="nl-about-floaters" aria-hidden="true"><span><Library className="w-4 h-4" /></span><span><Compass className="w-4 h-4" /></span><span><Wand2 className="w-4 h-4" /></span></div>
+        <div className="nl-about-floaters" aria-hidden="true"><span><Library className="w-4 h-4" /></span><span><Compass className="w-4 h-4" /></span><span><Feather className="w-4 h-4" /></span></div>
         {section.eyebrow && <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full mb-6" style={{ background: 'rgba(0, 151, 178, 0.1)' }}>
-          <Sparkles className="w-3.5 h-3.5" style={{ color: 'var(--color-teal-dark)' }} />
+          <Compass className="w-3.5 h-3.5" style={{ color: 'var(--color-teal-dark)' }} />
           <span className="text-xs font-medium tracking-wide" style={{ color: 'var(--color-teal-dark)' }}>{section.eyebrow}</span>
         </div>}
         <h1 className="font-serif text-4xl sm:text-5xl font-semibold leading-tight tracking-tight mb-6 text-balance" style={{ color: 'var(--color-text)' }}>{section.title}</h1>
@@ -52,6 +53,7 @@ export function AboutSectionBlock({ section, email, navigate }: { section: About
         <div className="nl-about-actions" role="group" aria-label="Quick links">
           <button type="button" className="nl-action-btn" onClick={() => navigate('/reviews')}><BookOpen aria-hidden="true" /><span>Reviews</span></button>
           <button type="button" className="nl-action-btn" onClick={() => navigate('/analytics')}><BarChart3 aria-hidden="true" /><span>Analytics</span></button>
+          <button type="button" className="nl-action-btn" onClick={() => navigate('/live-rankings')}><Trophy aria-hidden="true" /><span>Live Rankings</span></button>
         </div>
       </div>;
 
@@ -69,17 +71,17 @@ export function AboutSectionBlock({ section, email, navigate }: { section: About
     case 'grid':
       return <div className="mb-16">
         <Heading title={section.title} subtitle={section.subtitle} />
-        {section.title.toLowerCase().includes('why share your review') && <div className="flex justify-center mb-7 px-2">
-          <button type="button" className="nl-action-btn nl-about-guide-btn" onClick={() => navigate('/review-guidelines')}>
-            <FileText aria-hidden="true" /><span>Read the Review Guide</span><ArrowRight aria-hidden="true" />
-          </button>
-        </div>}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {section.items.map((it, i) => { const Icon = ICONS[it.icon || 'sparkles'] || Sparkles; return <div key={`${it.title}-${i}`} className="surface-card p-5 flex gap-3 nl-about-card">
+          {section.items.map((it, i) => { const Icon = ICONS[it.icon || 'sparkles'] || BookOpen; return <div key={`${it.title}-${i}`} className="surface-card p-5 flex gap-3 nl-about-card">
             <Icon className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: 'var(--color-teal-dark)' }} />
             <div className="min-w-0"><h4 className="text-sm font-semibold mb-1" style={{ color: 'var(--color-text)' }}>{it.title}</h4><p className="text-xs leading-relaxed" style={{ color: 'var(--color-text-muted)' }}>{it.desc}</p></div>
           </div>; })}
         </div>
+        {section.title.toLowerCase().includes('why share your review') && <div className="flex justify-center mt-8 px-2">
+          <button type="button" className="nl-action-btn nl-about-guide-btn" onClick={() => navigate('/review-guidelines')}>
+            <FileText aria-hidden="true" /><span>Read the Review Guide</span><ArrowRight aria-hidden="true" />
+          </button>
+        </div>}
       </div>;
 
     case 'steps':
@@ -98,12 +100,18 @@ export function AboutSectionBlock({ section, email, navigate }: { section: About
 
     case 'cta': {
       const link = safeLink(section.button_link);
-      return <div className="text-center p-8 sm:p-10 rounded-3xl gradient-teal text-white mb-8">
+      return <>
+      <div className="nl-about-social" aria-label="Follow Novelty Library">
+        <a href={BLOG_URL} target="_blank" rel="noopener noreferrer" className="nl-about-social-btn is-blog"><Newspaper aria-hidden="true" /><span>Blog</span><ArrowRight className="nl-about-social-arrow" aria-hidden="true" /></a>
+        <a href={INSTAGRAM_URL} target="_blank" rel="noopener noreferrer" className="nl-about-social-btn is-ig"><Instagram aria-hidden="true" /><span>Follow on Instagram</span><ArrowRight className="nl-about-social-arrow" aria-hidden="true" /></a>
+      </div>
+      <div className="text-center p-8 sm:p-10 rounded-3xl nl-about-cta text-white mb-8">
         <PenTool className="w-8 h-8 text-white/70 mx-auto mb-4" />
         <h2 className="font-serif text-3xl font-semibold mb-3">{section.title}</h2>
         {section.body && <p className="text-white/70 leading-relaxed mb-6 max-w-md mx-auto">{section.body}</p>}
         {section.button_label && link && <button type="button" onClick={() => (link.startsWith('/') ? navigate(link) : window.open(link, '_blank', 'noopener,noreferrer'))} className="inline-flex items-center gap-2 px-6 py-3 rounded-full font-medium text-sm tracking-wide bg-white/15 hover:bg-white/25 transition-all duration-300">{section.button_label} <ArrowRight className="w-4 h-4" /></button>}
-      </div>;
+      </div>
+      </>;
     }
 
     default:

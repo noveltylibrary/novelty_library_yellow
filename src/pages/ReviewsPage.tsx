@@ -1,15 +1,40 @@
 import { Fragment, useState, useEffect, useMemo } from 'react';
-import { Search, ArrowUp, Sparkles, FileText, BookMarked, PenTool, BarChart3 } from 'lucide-react';
+import { Search, ArrowUp, Users, Trophy, PenTool, BarChart3 } from 'lucide-react';
 import type { Review } from '@/types/review';
+import { TasteMatchIcon } from '@/components/TasteMatchIcon';
 import { loadReviewCached, fetchReviews } from '@/lib/reviews';
 import { CommunityReviewCard, type CommunityReviewCardData } from '@/components/CommunityReviewCard';
-import { AdsterraAdSlot } from '@/components/AdsterraAdSlot';
+import { AdSenseAdSlot } from '@/components/AdSenseAdSlot';
 import { FeedbackModal } from '@/components/FeedbackModal';
 import { useAuth } from '@/lib/auth';
 import { fetchFeedback, saveFeedback, useEngagement, type FeedbackEntry, type FeedbackInput } from '@/lib/engagement';
 
 interface ReviewsPageProps {
   navigate: (path: string) => void;
+}
+
+/** Extract a numeric Review No. from modern and legacy formats such as 48, "#48", or "Review No. 48". */
+function getNumericReviewNo(review: Review): number | null {
+  for (const value of [review.review_number, review.master_review_no]) {
+    if (value === null || value === undefined || value === '') continue;
+    const match = String(value).match(/\d+/);
+    if (!match) continue;
+    const number = Number(match[0]);
+    if (Number.isFinite(number) && number > 0) return number;
+  }
+  return null;
+}
+
+/** Order the reader-facing Community Reviews by Review No., not publish date or text ordering. */
+function sortCommunityReviewsByNumber(reviews: Review[]): Review[] {
+  return [...reviews].sort((a, b) => {
+    const aNo = getNumericReviewNo(a);
+    const bNo = getNumericReviewNo(b);
+    if (aNo === null && bNo === null) return 0;
+    if (aNo === null) return 1;
+    if (bNo === null) return -1;
+    return bNo - aNo;
+  });
 }
 
 function mapCommunityReviews(reviews: Review[]): CommunityReviewCardData[] {
@@ -73,7 +98,12 @@ export function ReviewsPage({ navigate }: ReviewsPageProps) {
       });
   }, []);
 
-  const communityItems = useMemo(() => mapCommunityReviews(reviews), [reviews]);
+  // This affects only the public Community Reviews feed; keep the admin Publishing Queue untouched.
+  // Review No. may be stored as text, so sort on normalized numeric values after fetching.
+  const communityItems = useMemo(
+    () => mapCommunityReviews(sortCommunityReviewsByNumber(reviews)),
+    [reviews],
+  );
 
   const filteredCommunity = useMemo(() => {
     let result = communityItems;
@@ -105,15 +135,15 @@ export function ReviewsPage({ navigate }: ReviewsPageProps) {
     <div className="pt-24 pb-20 container-prose container-wide animate-fade-in">
       <header className="mb-8">
         <div className="nl-reviews-actions" role="group" aria-label="Review shortcuts">
-          <button type="button" className="nl-action-btn" onClick={() => navigate('/review-guidelines')}><FileText aria-hidden="true" /><span>Review Guide</span></button>
-          <button type="button" className="nl-action-btn" onClick={() => navigate('/submit#reserve')}><BookMarked aria-hidden="true" /><span>Reserve</span></button>
           <button type="button" className="nl-action-btn" onClick={() => navigate('/submit')}><PenTool aria-hidden="true" /><span>Submit</span></button>
+          <button type="button" className="nl-action-btn" onClick={() => navigate('/live-rankings')}><Trophy aria-hidden="true" /><span>Rankings</span></button>
           <button type="button" className="nl-action-btn" onClick={() => navigate('/analytics')}><BarChart3 aria-hidden="true" /><span>Analytics</span></button>
+          <button type="button" className="nl-action-btn" onClick={() => navigate('/taste-match')}><TasteMatchIcon className="w-5 h-5" aria-hidden="true" /><span>Taste Match SE</span></button>
         </div>
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5">
           <div>
             <div className="inline-flex items-center gap-2 mb-3 text-xs font-semibold uppercase tracking-[0.18em]" style={{ color: 'var(--color-teal-dark)' }}>
-              <Sparkles className="w-3.5 h-3.5" />
+              <Users className="w-3.5 h-3.5" />
               Community Reviews
             </div>
             <h1 className="font-serif text-4xl md:text-5xl font-semibold" style={{ color: 'var(--color-text)' }}>
@@ -171,12 +201,12 @@ export function ReviewsPage({ navigate }: ReviewsPageProps) {
                   onRate={() => void openFeedback(item)}
                   onReview={() => void openFeedback(item)}
                 />
-                {i === 11 && <div className="col-span-full"><AdsterraAdSlot /></div>}
+                {i === 7 && <div className="col-span-full"><AdSenseAdSlot /></div>}
               </Fragment>
             ))}
           </div>
 
-          <AdsterraAdSlot className="mt-8" />
+          <AdSenseAdSlot className="mt-8" />
         </>
       )}
 

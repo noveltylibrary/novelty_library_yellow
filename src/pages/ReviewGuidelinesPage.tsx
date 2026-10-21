@@ -3,8 +3,9 @@ import { ArrowLeft, ChevronDown, X, ZoomIn } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { fetchReviewGuidelineSections, withNlRating, type ReviewGuidelineSection } from '@/lib/reviewGuidelines';
 import { GUIDE_CSS } from '@/components/ReviewGuidelinesModal';
-import AdsterraAdSlot from '@/components/AdsterraAdSlot';
+import AdSenseAdSlot from '@/components/AdSenseAdSlot';
 import { RatingGuideCard, RATING_GUIDE_CSS } from '@/components/RatingGuideCard';
+import { useOverlayHistory } from '@/lib/overlayHistory';
 
 interface ReviewGuidelinesPageProps {
   navigate: (path: string) => void;
@@ -101,7 +102,7 @@ const PAGE_CSS = `
   /* Ad strip inside each dropdown: collapses to one slim line when there is no ad */
   .ng-ad { display: flex; justify-content: center; padding: 6px 22px 14px; background: rgba(255,255,255,.66); }
   .dark .novelty-guide-outer-wrapper .ng-ad { background: rgba(3,20,27,.44); }
-  .ng-ad .adsterra-slot { margin: 0 auto; }
+  .ng-ad .adsense-slot { margin: 0 auto; }
 
   @media (prefers-reduced-motion: reduce) {
     .ng-header-frame, .ng-header-frame::before, .ng-sheen::after, .ng-sparkles span, .ng-glow::before, .ng-figure figcaption::before, .novelty-section[open] .novelty-content { animation: none !important; }
@@ -187,7 +188,7 @@ function GuideSection({ section, index, navigate, showRating, onZoom }: { sectio
         <figcaption>{img.caption}</figcaption>
       </figure></Reveal>)}
     </div>}
-    {everOpen && <div className="ng-ad"><AdsterraAdSlot active={open} /></div>}
+    {everOpen && <div className="ng-ad"><AdSenseAdSlot active={open} /></div>}
   </details>;
 }
 
@@ -196,6 +197,7 @@ export function ReviewGuidelinesPage({ navigate }: ReviewGuidelinesPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [zoom, setZoom] = useState<GuideImage | null>(null);
+  useOverlayHistory(zoom !== null, () => setZoom(null));
 
   useEffect(() => {
     let active = true;
@@ -258,7 +260,7 @@ export function ReviewGuidelinesPage({ navigate }: ReviewGuidelinesPageProps) {
                 <img src={ASSET('guide-header')} width={1600} height={840} alt="Novelty Library review guidelines: free, unlimited, no deadline" fetchPriority="high" decoding="async" />
                 <span className="ng-sheen" aria-hidden="true" />
                 <span className="ng-sparkles" aria-hidden="true">{SPARKLES.map((p, i) => <span key={i} style={{ ['--x' as string]: p.x, ['--y' as string]: p.y, ['--z' as string]: p.z, ['--d' as string]: p.d, ['--dl' as string]: p.dl }} />)}</span>
-                <a className="ng-submit-cta" href="#/submit" aria-label="Submit now: open the Submit Reviews page" onClick={(e) => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return; e.preventDefault(); navigate('/submit'); }}><span className="ng-sr-only">Submit now</span></a>
+                <a className="ng-submit-cta" href="/submit" aria-label="Submit now: open the Submit Reviews page" onClick={(e) => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return; e.preventDefault(); navigate('/submit'); }}><span className="ng-sr-only">Submit now</span></a>
               </div>
             </Tilt>
           </header>

@@ -5,6 +5,7 @@ import {
   LayoutGrid, Database, RefreshCw, BookOpen, Star, User,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
+import { go } from '@/lib/router';
 import { supabase } from '@/lib/supabase';
 import { VERDICTS, normalizeVerdict } from '@/lib/verdict';
 import { mirrorVerdictToPublished } from '@/lib/reviews';
@@ -234,7 +235,12 @@ export function AdminMasterListPage({ navigate, embedded = false }: MasterListPa
     setSyncing(true);
     setSyncMsg(null);
     try {
-      const res = await fetch(SHEET_IMPORT_URL, {
+      // This import endpoint is a GET Edge Function. Bypass browser/CDN caches
+      // so Sync Now always asks the server to re-read the current Google Sheet.
+      const freshImportUrl = `${SHEET_IMPORT_URL}&_=${Date.now()}`;
+      const res = await fetch(freshImportUrl, {
+        method: 'GET',
+        cache: 'no-store',
         headers: await adminFunctionHeaders(),
       });
       if (!res.ok) throw new Error(`Sync failed (${res.status})`);
@@ -1056,7 +1062,7 @@ function renderCellValue(value: string, col: ColumnKey): React.ReactNode {
 
   if (col === 'novelty_username' && value) {
     const handle = value.replace(/^@/, '');
-    return <button type="button" onClick={() => window.location.hash = `/profile/@${encodeURIComponent(handle)}`} className="text-xs hover:underline truncate block" style={{ color: 'var(--color-cyan-dark)' }}>@{handle}</button>;
+    return <button type="button" onClick={() => go(`/profile/@${encodeURIComponent(handle)}`)} className="text-xs hover:underline truncate block" style={{ color: 'var(--color-cyan-dark)' }}>@{handle}</button>;
   }
 
   if (col === 'instagram' && value) {

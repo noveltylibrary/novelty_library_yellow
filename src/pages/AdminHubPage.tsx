@@ -1,5 +1,6 @@
 import { Shield, BookMarked, ArrowLeft, LogOut, UserCog, Database, ExternalLink, Users, WalletCards, FileText } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
+import { APP_VERSION } from '@/lib/version';
 
 // Derive the Supabase project ref from the project URL so admins can jump
 // straight into the Supabase dashboard (table editor, SQL editor, auth,
@@ -60,22 +61,22 @@ export function AdminHubPage({ navigate }: AdminHubPageProps) {
       gradient: 'linear-gradient(135deg, #0097b2 0%, #5ce1e6 100%)',
     },
     {
-      title: 'Admins & Contacts',
-      desc: 'Manage admin access and the site-wide Support contact email.',
+      title: 'Open Control Settings',
+      desc: 'Control admin access and the Support contact, send notifications, and view how Taste Match works with a settings lab.',
       icon: UserCog,
       path: '/admin/admins',
       gradient: 'linear-gradient(135deg, #013a46 0%, #0097b2 100%)',
     },
     {
       title: 'Users & Accounts',
-      desc: 'View all registered accounts, profile details, sign-in activity, reviews and saved drafts directly from the admin panel.',
+      desc: 'View all registered accounts, profile details, sign-in activity, reviews and saved drafts — and blacklist or restore any user.',
       icon: Users,
       path: '/admin/users',
       gradient: 'linear-gradient(135deg, #064e5a 0%, #22c3d0 100%)',
     },
     {
       title: 'Finances and Payments',
-      desc: 'B2B/B2C dashboard links for Adsterra and future payment modules, all opened inside the Novelty Library admin experience.',
+      desc: 'B2B/B2C dashboard links for AdSense and future payment modules, all opened inside the Novelty Library admin experience.',
       icon: WalletCards,
       path: '/admin/finances',
       gradient: 'linear-gradient(135deg, #075985 0%, #22c3d0 100%)',
@@ -98,7 +99,7 @@ export function AdminHubPage({ navigate }: AdminHubPageProps) {
             <span className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--color-teal-dark)' }}>Admin Dashboard</span>
           </div>
           <h1 className="font-serif text-4xl font-semibold tracking-tight" style={{ color: 'var(--color-text)' }}>Welcome back</h1>
-          <p className="text-sm mt-2" style={{ color: 'var(--color-text-muted)' }}>Signed in as {user.email}</p>
+          <p className="text-sm mt-2" style={{ color: 'var(--color-text-muted)' }}>Signed in as {user.email} · build v{APP_VERSION}</p>
         </div>
         <div className="flex items-center gap-2">
           <a href={SUPABASE_DASHBOARD_URL} target="_blank" rel="noopener noreferrer" className="btn-ghost text-sm">
